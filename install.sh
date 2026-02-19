@@ -538,6 +538,67 @@ task "Updating .gitignore" _update_gitignore
 task "Creating directories" \
     mkdir -p squid litellm agent telegram-bot openclaw-config wordpress-bridge-plugin
 
+# When WordPress is local, MariaDB defaults to listening on localhost only.
+# The agent runs in a Docker container and reaches the host via host.docker.internal.
+# This task:
+#   1. Opens MariaDB to listen on all interfaces (UFW blocks 3306 from internet)
+#   2. Grants the WP DB user from the Docker agent-internal subnet (172.28.0.0/16)
+#   3. Updates DB_HOST in wp-config.php to host.docker.internal
+_bridge_mysql_to_agent() {
+    [[ "$WP_REMOTE" == "true" ]] && return 0
+    [[ -z "$WP_PATH" ]]          && return 0
+
+    # Only run if MariaDB/MySQL is managed locally
+    systemctl is-active --quiet mariadb 2>/dev/null \
+        || systemctl is-active --quiet mysql 2>/dev/null \
+        || { log "MariaDB not running locally — skipping bridge setup"; return 0; }
+
+    # Read DB credentials — from install vars (fresh install) or wp-config.php (existing)
+    local db_name db_user db_pass current_host
+    if [[ "$WP_INSTALL" == "true" ]]; then
+        db_name="$WP_DB_NAME"
+        db_user="$WP_DB_USER"
+        db_pass="$WP_DB_PASS"
+    else
+        db_name=$(wp config get DB_NAME     --path="$WP_PATH" --allow-root 2>/dev/null || echo "")
+        db_user=$(wp config get DB_USER     --path="$WP_PATH" --allow-root 2>/dev/null || echo "")
+        db_pass=$(wp config get DB_PASSWORD --path="$WP_PATH" --allow-root 2>/dev/null || echo "")
+        [[ -z "$db_name" || -z "$db_user" ]] \
+            && { log "Cannot read DB credentials from wp-config.php — skipping"; return 1; }
+    fi
+
+    # Skip if DB_HOST is already pointing somewhere non-local (managed DB, remote host, etc.)
+    current_host=$(wp config get DB_HOST --path="$WP_PATH" --allow-root 2>/dev/null || echo "localhost")
+    if [[ "$current_host" != "localhost" && "$current_host" != "127.0.0.1" ]]; then
+        log "DB_HOST='$current_host' is already non-local — no bridge needed"
+        return 0
+    fi
+
+    # 1. Make MariaDB listen on 0.0.0.0 so it accepts TCP from the Docker subnet.
+    #    UFW is configured above to block port 3306 from the internet.
+    for conf in \
+        /etc/mysql/mariadb.conf.d/50-server.cnf \
+        /etc/mysql/conf.d/mysql.cnf \
+        /etc/mysql/my.cnf \
+        /etc/mysql/mysql.conf.d/mysqld.cnf; do
+        [[ -f "$conf" ]] && sed -i 's/^bind-address\s*=.*/bind-address = 0.0.0.0/' "$conf"
+    done
+    systemctl restart mariadb 2>/dev/null || systemctl restart mysql 2>/dev/null || true
+    sleep 2
+
+    # 2. Grant the WP DB user from the agent-internal Docker subnet (172.28.0.0/16)
+    mysql -u root << SQLEOF
+GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'172.28.%' IDENTIFIED BY '${db_pass}';
+FLUSH PRIVILEGES;
+SQLEOF
+
+    # 3. Update wp-config.php — agent resolves host.docker.internal to the host machine
+    wp config set DB_HOST host.docker.internal \
+        --path="$WP_PATH" --allow-root 2>/dev/null || true
+}
+task "Bridging MariaDB to agent Docker network" _bridge_mysql_to_agent \
+    || warn "MySQL bridge setup failed — WP-CLI in the agent container may not reach the DB."
+
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 4 or 5 — Build Docker images
 # ─────────────────────────────────────────────────────────────────────────────

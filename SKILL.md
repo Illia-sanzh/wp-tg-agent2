@@ -187,6 +187,10 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | \
 
 **No network scanning.** Never use `nmap`, `nc`, port scans, or network discovery commands to find databases or services. WP-CLI handles database connections internally via `wp-config.php`. Just run `wp <command> --path=/wordpress --allow-root` directly — no pre-flight network reconnaissance needed.
 
+**WP-CLI database error → use REST API immediately.** If any WP-CLI command fails with a database error (`Error establishing a database connection`, `Access denied for user`, `Can't connect to MySQL server`, `Unknown MySQL server host`), stop and switch to the `wp_rest` tool. Do NOT: read `wp-config.php` for credentials, run `mysql` client commands, check `service mysql status`, run `systemctl status mysql`, run `mysqladmin`, try `mysqld_safe` or `mysqld --daemonize`, or scan for MySQL processes with `ps aux`. The database is managed externally — the agent cannot fix or reach it directly. Use REST API to complete the task.
+
+**Never start or restart system services.** If MySQL, Apache, nginx, php-fpm, or any service appears to be down, report the status to the user in plain language and stop. Never run `service X start`, `systemctl start X`, or any daemon command. Starting services is outside the agent's scope and can cause data corruption.
+
 ## Content Formatting Rules
 
 When creating posts, pages, or product descriptions, follow these rules strictly:

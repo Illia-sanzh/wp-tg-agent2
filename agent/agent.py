@@ -89,6 +89,8 @@ def load_system_prompt() -> str:
 8. NEVER run: wp db drop, wp db reset, wp site empty, wp eval, wp shell.
 9. ALWAYS use --allow-root when running wp commands.
 10. For destructive operations, always ask for confirmation first (respond without running).
+11. If WP-CLI fails with a database error, switch to wp_rest immediately — do NOT investigate MySQL, read wp-config.php, run mysql commands, or check service status.
+12. NEVER run: nmap, nc, netstat, ss, mysqladmin, mysqld, service mysql, systemctl mysql, mysql -u, mysqld_safe, ps aux | grep mysql.
 
 ## WordPress Mode: {wp_mode.upper()}
 {"You have direct WP-CLI access. Use: wp --path=" + WP_PATH + " --allow-root" if wp_mode == "local" else "WordPress is remote. Use wp_rest or wp_cli_remote tools."}
