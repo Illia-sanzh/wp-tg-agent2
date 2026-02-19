@@ -592,9 +592,12 @@ GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'172.28.%' IDENTIFIED B
 FLUSH PRIVILEGES;
 SQLEOF
 
-    # 3. Update wp-config.php — agent resolves host.docker.internal to the host machine
-    wp config set DB_HOST host.docker.internal \
-        --path="$WP_PATH" --allow-root 2>/dev/null || true
+    # 3. Make DB_HOST in wp-config.php read from the WP_DB_HOST env var when set,
+    #    falling back to localhost. This lets the Docker agent container use
+    #    host.docker.internal while PHP-FPM on the host keeps using localhost (socket).
+    sed -i -E \
+        "s|define\(\s*'DB_HOST'\s*,\s*'[^']+'\s*\)|define('DB_HOST', getenv('WP_DB_HOST') ?: 'localhost')|" \
+        "$WP_PATH/wp-config.php" 2>/dev/null || true
 }
 task "Bridging MariaDB to agent Docker network" _bridge_mysql_to_agent \
     || warn "MySQL bridge setup failed — WP-CLI in the agent container may not reach the DB."

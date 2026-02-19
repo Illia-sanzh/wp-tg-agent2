@@ -92,9 +92,12 @@ services:
       NO_PROXY: "openclaw-litellm,openclaw-squid,openclaw-bot,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
       SKILL_FILE: "/app/SKILL.md"
       WP_PATH: "/wordpress"
+      # Overrides DB_HOST inside the container so WP-CLI can reach the host's MariaDB.
+      # wp-config.php reads this env var; PHP-FPM on the host doesn't have it set,
+      # so WordPress itself keeps connecting via localhost (socket). See install.sh.
+      WP_DB_HOST: "host.docker.internal"
     extra_hosts:
-      # Resolves to the host machine from inside the container.
-      # Lets WP-CLI reach MariaDB running on the host (DB_HOST=host.docker.internal).
+      # Makes host.docker.internal resolve to the host machine from inside the container.
       - "host.docker.internal:host-gateway"
     volumes:
       # WordPress files (if on same server). Remote-only mode: set WP_PATH="" in .env
