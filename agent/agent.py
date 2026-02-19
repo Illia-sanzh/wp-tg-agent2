@@ -240,7 +240,7 @@ def wp_rest(method: str, endpoint: str, body: dict = None, params: dict = None) 
             headers=headers,
             auth=auth,
             timeout=30,
-            # Squid proxy is set via HTTP_PROXY env var automatically
+            proxies={},  # Bypass Squid — WP_URL is the user's own site, not an arbitrary domain
         )
         text = resp.text
         if len(text) > MAX_OUTPUT_CHARS:
@@ -265,6 +265,7 @@ def wp_cli_remote(command: str) -> str:
                 "Content-Type": "application/json",
             },
             timeout=60,
+            proxies={},  # Bypass Squid — bridge plugin is on the user's own WordPress server
         )
         data = resp.json()
         return data.get("output", str(data))
