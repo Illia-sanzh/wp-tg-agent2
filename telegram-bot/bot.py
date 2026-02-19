@@ -25,7 +25,12 @@ from telegram.ext import (
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-ADMIN_USER_ID = int(os.environ["TELEGRAM_ADMIN_USER_ID"])
+# Supports a single ID or a comma-separated list: "123456,789012"
+ADMIN_USER_IDS = {
+    int(uid.strip())
+    for uid in os.environ["TELEGRAM_ADMIN_USER_ID"].split(",")
+    if uid.strip()
+}
 AGENT_URL = os.environ.get("AGENT_URL", "http://openclaw-agent:8080")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "claude-sonnet-4-6")
 
@@ -38,7 +43,7 @@ logger = logging.getLogger(__name__)
 # ─── Auth helper ──────────────────────────────────────────────────────────────
 
 def is_admin(update: Update) -> bool:
-    return update.effective_user.id == ADMIN_USER_ID
+    return update.effective_user.id in ADMIN_USER_IDS
 
 # ─── Command handlers ─────────────────────────────────────────────────────────
 
@@ -231,7 +236,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    logger.info(f"Starting bot (admin user: {ADMIN_USER_ID})")
+    logger.info(f"Starting bot (admin users: {ADMIN_USER_IDS})")
 
     app = (
         Application.builder()
