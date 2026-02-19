@@ -1,0 +1,154 @@
+version: '3.8'
+
+# WordPress Telegram Agent - Container Stack
+# Architecture: Bot → Agent → LiteLLM → Squid → Internet
+#
+# NETWORK ISOLATION MODEL (matches PDF architecture):
+#   agent-internal: internal:true → NO route to internet. Containers here
+#                   physically cannot open outbound connections to the internet.
+#   proxy-external: normal bridge with internet routing. ONLY Squid is here.
+#
+#   Squid sits in BOTH networks, acting as the sole internet gateway.
+#   HTTP_PROXY env vars ensure HTTP/HTTPS traffic uses Squid.
+#   internal:true ensures raw-socket bypass attempts are blocked at the OS level.
+
+services:
+
+  # ── Egress proxy ──────────────────────────────────────────────────────────
+  # THE ONLY CONTAINER WITH INTERNET ACCESS.
+  # Lives in agent-internal (to serve other containers) AND proxy-external
+  # (to reach the internet). Allowlist enforced by squid.conf.
+  openclaw-squid:
+    image: ubuntu/squid:5.7-22.04_beta
+    container_name: openclaw-squid
+    restart: unless-stopped
+    volumes:
+      - ./squid/squid.conf:/etc/squid/squid.conf:ro
+      - ./squid/allowlist.txt:/etc/squid/allowlist.txt:ro
+      - squid-logs:/var/log/squid
+    networks:
+      agent-internal: {}   # Accessible to other containers
+      proxy-external: {}   # Can reach the internet
+    healthcheck:
+      test: ["CMD-SHELL", "squid -k check 2>/dev/null || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── LLM Proxy ─────────────────────────────────────────────────────────────
+  # Sits between agent and AI providers. Holds real API keys. Budget limits.
+  # internal:true means it has NO internet route — must use Squid for all
+  # outbound AI API calls.
+  openclaw-litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: openclaw-litellm
+    restart: unless-stopped
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    env_file: .env
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    environment:
+      # Force all AI API calls through Squid (the only internet gateway)
+      HTTPS_PROXY: "http://openclaw-squid:3128"
+      HTTP_PROXY: "http://openclaw-squid:3128"
+      NO_PROXY: "openclaw-squid,openclaw-agent,openclaw-bot,localhost,127.0.0.1,172.28.0.0/16"
+      UVICORN_WORKERS: "1"
+    mem_limit: 512m
+    networks:
+      agent-internal: {}   # No internet route (internal:true on this network)
+    depends_on:
+      openclaw-squid:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4000/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+
+  # ── WordPress AI Agent ────────────────────────────────────────────────────
+  # Receives tasks, runs agentic loop with the LLM, executes WP-CLI / REST API.
+  # internal:true means it physically cannot reach the internet directly.
+  # All outbound traffic goes through Squid via HTTP_PROXY env var.
+  # LLM calls go to LiteLLM (internal), which then proxies through Squid.
+  openclaw-agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: openclaw-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Points to LiteLLM, NOT directly to Anthropic → fixes the 401 issue
+      LITELLM_BASE_URL: "http://openclaw-litellm:4000/v1"
+      # For any tool that downloads from the internet (plugins, images)
+      HTTPS_PROXY: "http://openclaw-squid:3128"
+      HTTP_PROXY: "http://openclaw-squid:3128"
+      NO_PROXY: "openclaw-litellm,openclaw-squid,openclaw-bot,localhost,127.0.0.1,172.28.0.0/16"
+      SKILL_FILE: "/app/SKILL.md"
+      WP_PATH: "/wordpress"
+    volumes:
+      # WordPress files (if on same server). Remote-only mode: set WP_PATH="" in .env
+      - ${WP_PATH:-/var/www/html}:/wordpress:rw
+      - ./SKILL.md:/app/SKILL.md:ro
+      - ./openclaw-config:/app/config:ro
+      - agent-tmp:/tmp/wp-agent
+    mem_limit: 1536m
+    networks:
+      agent-internal: {}   # No internet route
+    depends_on:
+      openclaw-litellm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # ── Telegram Bot ──────────────────────────────────────────────────────────
+  # User interface. Relays Telegram messages to the agent.
+  # Telegram API (api.telegram.org) is on the Squid allowlist.
+  openclaw-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    container_name: openclaw-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AGENT_URL: "http://openclaw-agent:8080"
+      # Telegram long-polling goes through Squid
+      HTTPS_PROXY: "http://openclaw-squid:3128"
+      HTTP_PROXY: "http://openclaw-squid:3128"
+      NO_PROXY: "openclaw-agent,openclaw-litellm,openclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
+    mem_limit: 256m
+    networks:
+      agent-internal: {}   # No internet route
+    depends_on:
+      openclaw-agent:
+        condition: service_healthy
+
+volumes:
+  squid-logs:
+  agent-tmp:
+
+networks:
+  # All agent/bot containers live here. internal:true = NO internet routing.
+  # Containers can reach each other, but not the outside world directly.
+  agent-internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: "172.28.0.0/16"
+
+  # Only Squid lives here alongside agent-internal.
+  # Normal bridge = HAS internet routing.
+  # This is Squid's "outside leg" for reaching AI APIs, Telegram, etc.
+  proxy-external:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "172.29.0.0/16"

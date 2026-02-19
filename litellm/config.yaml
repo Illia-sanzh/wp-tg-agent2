@@ -1,0 +1,102 @@
+# LiteLLM Proxy Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# This file maps friendly model names to actual AI providers.
+# The agent calls LiteLLM using the OpenAI-compatible API, which completely
+# avoids the 401 issue that occurs when the Anthropic SDK is used directly.
+#
+# HOW THE 401 FIX WORKS:
+#   Agent → LiteLLM (OpenAI /v1/chat/completions)
+#                ↓
+#         LiteLLM → Anthropic/OpenAI/etc (real API key never leaves LiteLLM)
+#
+# The agent never touches Anthropic directly, so no 401 from Anthropic.
+# ─────────────────────────────────────────────────────────────────────────────
+
+model_list:
+
+  # ── Anthropic / Claude ────────────────────────────────────────────────────
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+      max_tokens: 8192
+
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: anthropic/claude-opus-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+      max_tokens: 8192
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+      max_tokens: 4096
+
+  # ── OpenAI / ChatGPT ──────────────────────────────────────────────────────
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ── DeepSeek ──────────────────────────────────────────────────────────────
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: deepseek-reasoner
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # ── Google Gemini ─────────────────────────────────────────────────────────
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro-preview-03-25
+      api_key: os.environ/GEMINI_API_KEY
+
+# ─────────────────────────────────────────────────────────────────────────────
+# General settings
+# ─────────────────────────────────────────────────────────────────────────────
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+  # Budget guard — prevents runaway spend
+  max_budget: "${MONTHLY_BUDGET_USD:-20}"
+  budget_duration: "1mo"
+
+  # Logging
+  drop_params: true          # Don't log params (hides API keys from logs)
+  set_verbose: false
+
+  # Fallback: if primary provider fails, try the fallback model
+  # (set DEFAULT_MODEL and FALLBACK_MODEL in .env)
+
+router_settings:
+  # Retry failed requests up to 2 times before falling back
+  num_retries: 2
+  retry_after: 5
+
+  # Automatic fallback if the default model fails
+  fallbacks:
+    - claude-sonnet-4-6: ["gpt-4o", "deepseek-chat", "gemini-2.0-flash"]
+    - gpt-4o: ["claude-sonnet-4-6", "deepseek-chat"]
+    - deepseek-chat: ["claude-sonnet-4-6", "gpt-4o"]
+    - gemini-2.0-flash: ["claude-sonnet-4-6", "gpt-4o"]
+
+litellm_settings:
+  # Request timeout in seconds
+  request_timeout: 120
+  # Allow empty API keys (LiteLLM will just skip that provider)
+  drop_params: true

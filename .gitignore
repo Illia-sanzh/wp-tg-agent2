@@ -1,0 +1,21 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Logs
+install.log
+*.log
+
+# Docker
+docker/volumes/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
