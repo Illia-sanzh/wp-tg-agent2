@@ -30,11 +30,13 @@ services:
       agent-internal: {}   # Accessible to other containers
       proxy-external: {}   # Can reach the internet
     healthcheck:
-      test: ["CMD-SHELL", "squid -k check 2>/dev/null || exit 0"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
+      # bash /dev/tcp check: reliable port-open test with no extra tools needed.
+      # squid -k check requires a PID file (not written in -N foreground mode).
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/3128' 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # ── LLM Proxy ─────────────────────────────────────────────────────────────
   # Sits between agent and AI providers. Holds real API keys. Budget limits.

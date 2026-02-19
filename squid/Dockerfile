@@ -9,6 +9,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -qq \
 
 EXPOSE 3128
 
-# -N  = no daemon mode (stay in foreground, required for Docker)
-# -d1 = minimal startup messages to stdout
-CMD ["squid", "-N", "-d1"]
+# squid -z  initialises the swap/cache directories on first run (required by Squid 6).
+# squid -N  keeps the process in the foreground (required for Docker).
+# squid -d1 prints minimal startup messages to stdout for docker logs visibility.
+CMD ["sh", "-c", "squid -z 2>/dev/null; exec squid -N -d1"]
