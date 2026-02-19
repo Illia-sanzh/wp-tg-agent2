@@ -34,6 +34,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Force httpx to stay <=0.27.x: openai SDK reads HTTP_PROXY/HTTPS_PROXY and
+# calls httpx.Client(proxies=...), an arg removed in httpx 0.28+. The explicit
+# http_client in agent.py is the primary fix; this pin is belt-and-suspenders.
+RUN pip install --no-cache-dir "httpx>=0.27.0,<0.28.0"
 
 COPY agent.py .
 

@@ -18,6 +18,7 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
 import requests
 from flask import Flask, jsonify, request
 from openai import OpenAI
@@ -46,10 +47,16 @@ app = Flask(__name__)
 
 # ─── LiteLLM client (OpenAI-compatible) ──────────────────────────────────────
 # This is the fix for the 401 issue: we never call Anthropic directly.
+#
+# Explicit http_client bypasses the openai SDK's env-var proxy injection.
+# Without this, the SDK reads HTTP_PROXY/HTTPS_PROXY and calls
+# httpx.Client(proxies=...), which was removed in httpx 0.28+ causing a
+# TypeError on startup. Providing our own client avoids that code path entirely.
 client = OpenAI(
     api_key=LITELLM_MASTER_KEY,
     base_url=LITELLM_BASE_URL,
     timeout=120.0,
+    http_client=httpx.Client(timeout=httpx.Timeout(120.0)),
 )
 
 # ─── Load skill / system prompt ───────────────────────────────────────────────
