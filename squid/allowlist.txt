@@ -2,6 +2,9 @@
 # Only these domains (and their subdomains) can be reached from containers.
 # Format: .domain.com  (leading dot = subdomains included)
 # Add new domains with: echo ".newdomain.com" >> allowlist.txt && docker exec openclaw-squid squid -k reconfigure
+#
+# NOTE (Squid 6): do NOT list a subdomain if its parent is already listed.
+# e.g. .api.example.com is redundant when .example.com is present.
 
 # ── AI Provider APIs ──────────────────────────────────────────────────────────
 .api.anthropic.com
@@ -12,19 +15,16 @@
 # ── Telegram ──────────────────────────────────────────────────────────────────
 .api.telegram.org
 
-# ── WordPress.org (plugin/theme downloads) ────────────────────────────────────
-.downloads.wordpress.org
-.plugins.svn.wordpress.org
-.themes.svn.wordpress.org
-.api.wordpress.org
+# ── WordPress.org (plugin/theme downloads, API, SVN) ─────────────────────────
+# .wordpress.org covers downloads.*, plugins.svn.*, themes.svn.*, api.*, etc.
 .wordpress.org
 .w.org
 
-# ── GitHub (for WP-CLI and plugin installs from GitHub) ───────────────────────
+# ── GitHub (WP-CLI, plugin installs) ─────────────────────────────────────────
+# .github.com covers codeload.github.com, pkg.github.com, etc.
 .github.com
 .raw.githubusercontent.com
 .objects.githubusercontent.com
-.codeload.github.com
 
 # ── WP-CLI updates ────────────────────────────────────────────────────────────
 .wp-cli.org
@@ -35,10 +35,9 @@
 .archive.ubuntu.com
 .security.ubuntu.com
 
-# ── Docker Hub (for image pulls during updates) ───────────────────────────────
+# ── Docker Hub / GitHub Container Registry ───────────────────────────────────
 .registry-1.docker.io
 .index.docker.io
 .auth.docker.io
 .production.cloudflare.docker.com
 .ghcr.io
-.pkg.github.com
