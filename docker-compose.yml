@@ -1,5 +1,3 @@
-version: '3.8'
-
 # WordPress Telegram Agent - Container Stack
 # Architecture: Bot → Agent → LiteLLM → Squid → Internet
 #
@@ -19,7 +17,9 @@ services:
   # Lives in agent-internal (to serve other containers) AND proxy-external
   # (to reach the internet). Allowlist enforced by squid.conf.
   openclaw-squid:
-    image: ubuntu/squid:5.7-22.04_beta
+    build:
+      context: ./squid
+      dockerfile: Dockerfile
     container_name: openclaw-squid
     restart: unless-stopped
     volumes:
