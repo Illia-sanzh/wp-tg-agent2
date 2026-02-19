@@ -56,7 +56,7 @@ services:
       HTTP_PROXY: "http://openclaw-squid:3128"
       NO_PROXY: "openclaw-squid,openclaw-agent,openclaw-bot,localhost,127.0.0.1,172.28.0.0/16"
       UVICORN_WORKERS: "1"
-    mem_limit: 512m
+    mem_limit: 896m
     networks:
       agent-internal: {}   # No internet route (internal:true on this network)
     depends_on:
@@ -98,7 +98,7 @@ services:
       - ./SKILL.md:/app/SKILL.md:ro
       - ./openclaw-config:/app/config:ro
       - agent-tmp:/tmp/wp-agent
-    mem_limit: 1536m
+    mem_limit: 1152m
     networks:
       agent-internal: {}   # No internet route
     depends_on:
