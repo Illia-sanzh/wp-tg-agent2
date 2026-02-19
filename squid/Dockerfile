@@ -12,4 +12,6 @@ EXPOSE 3128
 # squid -z  initialises the swap/cache directories on first run (required by Squid 6).
 # squid -N  keeps the process in the foreground (required for Docker).
 # squid -d1 prints minimal startup messages to stdout for docker logs visibility.
-CMD ["sh", "-c", "squid -z 2>/dev/null; exec squid -N -d1"]
+# squid -z writes a PID file then exits; the main squid process would see it
+# and refuse to start ("already running"). Remove it before exec-ing the real process.
+CMD ["sh", "-c", "squid -z 2>/dev/null; rm -f /run/squid.pid; exec squid -N -d1"]
