@@ -313,7 +313,7 @@ def _tool_label(fn_name: str, fn_args: dict) -> str:
 
 # ─── Agentic loop ─────────────────────────────────────────────────────────────
 
-def run_agent(user_message: str, model: str = None):
+def run_agent(user_message: str, model: str = None, history: list = None):
     """
     Main agentic loop — generator that yields progress events then a final result.
 
@@ -322,11 +322,16 @@ def run_agent(user_message: str, model: str = None):
       {"type": "progress", "text": "..."}          — tool about to execute
       {"type": "result", "text": "...",
        "elapsed": N, "model": "..."}               — final answer
+
+    history: list of {"role": "user"|"assistant", "content": "..."} from prior turns.
     """
     if model is None:
         model = DEFAULT_MODEL
 
-    messages = [{"role": "user", "content": user_message}]
+    # Prepend prior conversation turns so the agent remembers what it just did.
+    # History contains only plain text messages (no tool calls) to keep it simple.
+    messages = list(history or [])
+    messages.append({"role": "user", "content": user_message})
     system_injected = False
     start = time.time()
     steps = 0
@@ -362,7 +367,7 @@ def run_agent(user_message: str, model: str = None):
             err = str(e)
             if model != FALLBACK_MODEL:
                 app.logger.warning(f"Model {model} failed ({err}), trying {FALLBACK_MODEL}")
-                yield from run_agent(user_message, model=FALLBACK_MODEL)
+                yield from run_agent(user_message, model=FALLBACK_MODEL, history=history)
                 return
             yield {"type": "result", "text": f"AI service error: {err}",
                    "elapsed": round(time.time() - start, 1), "model": model}
@@ -414,6 +419,11 @@ def handle_task():
     data = request.get_json(force=True, silent=True) or {}
     message = data.get("message", "").strip()
     model = data.get("model", DEFAULT_MODEL)
+    history = data.get("history", [])
+
+    # Belt-and-suspenders cap: never let history exceed 20 messages (10 turns)
+    if len(history) > 20:
+        history = history[-20:]
 
     if not message:
         return jsonify({"error": "No message provided"}), 400
@@ -421,7 +431,7 @@ def handle_task():
     app.logger.info(f"Task received: {message[:100]}")
 
     def generate():
-        for event in run_agent(message, model=model):
+        for event in run_agent(message, model=model, history=history):
             yield json.dumps(event) + "\n"
             if event.get("type") == "result":
                 app.logger.info(f"Task done in {event.get('elapsed', '?')}s")

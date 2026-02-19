@@ -103,7 +103,8 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
     ctx.user_data.pop("running", None)
-    await update.message.reply_text("🛑 Task cancelled (if one was running).")
+    ctx.user_data.pop("history", None)
+    await update.message.reply_text("🛑 Task cancelled and conversation history cleared.")
 
 
 # ─── Message handler ──────────────────────────────────────────────────────────
@@ -118,6 +119,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     model = ctx.user_data.get("model", DEFAULT_MODEL)
+    history = ctx.user_data.get("history", [])
 
     await update.message.chat.send_action(ChatAction.TYPING)
 
@@ -132,7 +134,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             with requests.post(
                 f"{AGENT_URL}/task",
-                json={"message": user_text, "model": model},
+                json={"message": user_text, "model": model, "history": history},
                 stream=True,
                 timeout=310,
             ) as r:
@@ -197,6 +199,12 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             result = event.get("text", "(no result)")
             elapsed = event.get("elapsed", 0)
             model_used = event.get("model", model)
+
+    # Save this exchange to history (last 5 turns = 10 messages)
+    history = ctx.user_data.get("history", [])
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": result})
+    ctx.user_data["history"] = history[-10:]
 
     # Remove status message
     try:
