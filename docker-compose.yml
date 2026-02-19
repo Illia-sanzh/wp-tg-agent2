@@ -97,8 +97,10 @@ services:
       # so WordPress itself keeps connecting via localhost (socket). See install.sh.
       WP_DB_HOST: "host.docker.internal"
     extra_hosts:
-      # Makes host.docker.internal resolve to the host machine from inside the container.
-      - "host.docker.internal:host-gateway"
+      # 172.28.0.1 is the gateway of the agent-internal bridge — the host machine's IP
+      # as seen from containers on this network. Using host-gateway would resolve to
+      # docker0 (172.17.0.1) which is unreachable from an internal:true network.
+      - "host.docker.internal:172.28.0.1"
     volumes:
       # WordPress files (if on same server). Remote-only mode: set WP_PATH="" in .env
       - ${WP_PATH:-/var/www/html}:/wordpress:rw

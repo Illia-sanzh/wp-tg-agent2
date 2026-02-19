@@ -375,6 +375,15 @@ _setup_security() {
 
     ufw allow in on docker0  || true
     ufw allow out on docker0 || true
+
+    # Allow the Docker agent subnet to reach MariaDB on the host.
+    # The agent-internal network uses 172.28.0.0/16 (fixed in docker-compose.yml).
+    # This is needed because the agent container runs WP-CLI which connects to
+    # MariaDB via host.docker.internal — traffic goes through the custom bridge,
+    # NOT docker0, so "allow in on docker0" alone is not sufficient.
+    ufw allow in from 172.28.0.0/16 to any port 3306 proto tcp \
+        comment 'MariaDB from Docker agent subnet' || true
+
     ufw --force enable
 
     # SSH: key-only auth
@@ -541,9 +550,9 @@ task "Creating directories" \
 # When WordPress is local, MariaDB defaults to listening on localhost only.
 # The agent runs in a Docker container and reaches the host via host.docker.internal.
 # This task:
-#   1. Opens MariaDB to listen on all interfaces (UFW blocks 3306 from internet)
+#   1. Opens MariaDB to listen on all interfaces (UFW already allows 172.28.0.0/16:3306)
 #   2. Grants the WP DB user from the Docker agent-internal subnet (172.28.0.0/16)
-#   3. Updates DB_HOST in wp-config.php to host.docker.internal
+#   3. Makes wp-config.php read DB_HOST from the WP_DB_HOST env var (set in docker-compose)
 _bridge_mysql_to_agent() {
     [[ "$WP_REMOTE" == "true" ]] && return 0
     [[ -z "$WP_PATH" ]]          && return 0
