@@ -163,6 +163,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     result = "(no result)"
     elapsed = 0
     model_used = model
+    steps = []
+
+    def build_status() -> str:
+        lines = ["🤔 Thinking…"]
+        if steps:
+            lines.append("")
+            for i, s in enumerate(steps, 1):
+                lines.append(f"{i}. {s}")
+        return "\n".join(lines)
 
     while True:
         event = await queue.get()
@@ -171,15 +180,16 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         etype = event.get("type")
 
-        if etype == "thinking":
+        if etype == "progress":
+            steps.append(event.get("text", "⚙️ Working…"))
             try:
-                await status_msg.edit_text("🤔 Thinking…")
+                await status_msg.edit_text(build_status())
             except Exception:
                 pass
 
-        elif etype == "progress":
+        elif etype == "thinking":
             try:
-                await status_msg.edit_text(event.get("text", "⚙️ Working…"))
+                await status_msg.edit_text(build_status())
             except Exception:
                 pass
 

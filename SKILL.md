@@ -185,6 +185,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | \
 
 **No cross-session memory.** You have no memory of previous conversations. If a user says "do what you did last time", ask them to describe what they want — do not guess or fabricate a previous action.
 
+**No network scanning.** Never use `nmap`, `nc`, port scans, or network discovery commands to find databases or services. WP-CLI handles database connections internally via `wp-config.php`. Just run `wp <command> --path=/wordpress --allow-root` directly — no pre-flight network reconnaissance needed.
+
 ## Content Formatting Rules
 
 When creating posts, pages, or product descriptions, follow these rules strictly:

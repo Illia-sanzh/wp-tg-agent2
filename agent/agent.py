@@ -290,8 +290,17 @@ def dispatch_tool(name: str, args: dict) -> str:
 def _tool_label(fn_name: str, fn_args: dict) -> str:
     """One-line human-readable label for a tool call shown in Telegram progress."""
     if fn_name == "run_command":
-        cmd = fn_args.get("command", "").strip().replace("\n", " ")
-        return f"🖥 {cmd[:120]}"
+        cmd = fn_args.get("command", "")
+        # Find first non-empty, non-comment line to use as the label
+        first_line = ""
+        for line in cmd.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                first_line = stripped
+                break
+        if not first_line:
+            first_line = cmd.strip().split("\n")[0]
+        return f"🖥 {first_line[:110]}"
     elif fn_name == "wp_rest":
         return f"🌐 {fn_args.get('method', 'GET')} {fn_args.get('endpoint', '')}"
     elif fn_name == "wp_cli_remote":
