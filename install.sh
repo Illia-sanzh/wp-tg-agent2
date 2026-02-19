@@ -30,21 +30,33 @@ log()  { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; }
 # _pkg <name>  — true if the package is already installed (dpkg knows about it)
 _pkg() { dpkg -s "$1" &>/dev/null 2>&1; }
 
-# _wait_apt  — block until no apt/dpkg lock is held
-# Ubuntu's unattended-upgrades grabs the lock for several minutes after boot.
+# _stop_apt_services  — kill Ubuntu's background update daemons so they
+# release the dpkg lock immediately. On a fresh VPS unattended-upgrades
+# runs apt-get upgrade right after first boot and holds the lock for minutes.
+# Stopping it is safe — the user is about to do their own installs anyway.
+_stop_apt_services() {
+    systemctl stop unattended-upgrades    2>/dev/null || true
+    systemctl stop apt-daily.service      2>/dev/null || true
+    systemctl stop apt-daily-upgrade.service 2>/dev/null || true
+    systemctl kill --kill-who=all \
+        apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+    # Fix any dpkg state left interrupted by the killed services
+    dpkg --configure -a 2>/dev/null || true
+}
+
+# _wait_apt  — wait for residual locks after stopping the services (max 30s)
 _wait_apt() {
     local waited=0
     while fuser /var/lib/dpkg/lock-frontend &>/dev/null 2>&1 \
        || fuser /var/lib/dpkg/lock            &>/dev/null 2>&1 \
        || fuser /var/lib/apt/lists/lock       &>/dev/null 2>&1; do
-        if [[ $waited -eq 0 ]]; then
-            printf "\r  ${YELLOW}⚠${RESET}  Waiting for apt lock (unattended-upgrades?)...%-10s" ""
+        sleep 1
+        (( waited++ ))
+        if [[ $waited -ge 30 ]]; then
+            log "apt lock still held after 30s — proceeding anyway"
+            break
         fi
-        sleep 2
-        (( waited += 2 ))
     done
-    [[ $waited -gt 0 ]] && \
-        printf "\r  ${GREEN}✓${RESET}  apt lock released after %ds%-40s\n" "$waited" ""
 }
 
 # ── task <label> <cmd> [args...] ──────────────────────────────────────────────
@@ -294,6 +306,7 @@ ok "Configuration collected."
 nextstep "System packages"
 
 _apt_update() {
+    _stop_apt_services   # kill background apt daemons before touching the lock
     _wait_apt
     apt-get update -qq
 }
