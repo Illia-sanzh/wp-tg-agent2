@@ -35,29 +35,17 @@ _pkg() { dpkg -s "$1" &>/dev/null 2>&1; }
 # runs apt-get upgrade right after first boot and holds the lock for minutes.
 # Stopping it is safe — the user is about to do their own installs anyway.
 _stop_apt_services() {
-    systemctl stop unattended-upgrades    2>/dev/null || true
-    systemctl stop apt-daily.service      2>/dev/null || true
-    systemctl stop apt-daily-upgrade.service 2>/dev/null || true
-    systemctl kill --kill-who=all \
-        apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
-    # Fix any dpkg state left interrupted by the killed services
-    dpkg --configure -a 2>/dev/null || true
+    systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service \
+        2>/dev/null || true
+    systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service \
+        2>/dev/null || true
 }
 
-# _wait_apt  — wait for residual locks after stopping the services (max 30s)
-_wait_apt() {
-    local waited=0
-    while fuser /var/lib/dpkg/lock-frontend &>/dev/null 2>&1 \
-       || fuser /var/lib/dpkg/lock            &>/dev/null 2>&1 \
-       || fuser /var/lib/apt/lists/lock       &>/dev/null 2>&1; do
-        sleep 1
-        (( waited++ ))
-        if [[ $waited -ge 30 ]]; then
-            log "apt lock still held after 30s — proceeding anyway"
-            break
-        fi
-    done
-}
+# _apt  — wrapper for apt-get that:
+#   • adds DEBIAN_FRONTEND=noninteractive (no interactive prompts)
+#   • uses DPkg::Lock::Timeout=60 so apt itself waits up to 60 s for the lock
+#     instead of failing immediately (replaces the old _wait_apt fuser loop)
+_apt() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 "$@"; }
 
 # ── task <label> <cmd> [args...] ──────────────────────────────────────────────
 # Runs cmd in the background. Shows a spinner on ONE line (overwriting it each
@@ -307,8 +295,7 @@ nextstep "System packages"
 
 _apt_update() {
     _stop_apt_services   # kill background apt daemons before touching the lock
-    _wait_apt
-    apt-get update -qq
+    _apt update -qq
 }
 task "Updating package lists" _apt_update
 
@@ -322,14 +309,16 @@ _install_base_pkgs() {
         return 0
     fi
     log "Installing missing packages: ${missing[*]}"
-    _wait_apt
-    apt-get install -y -qq "${missing[@]}"
+    _apt install -y -qq "${missing[@]}"
 }
 task "Installing curl, git, openssl" _install_base_pkgs
 
 # Docker — wrapped in a function because it's multi-step
 _install_docker() {
     if command -v docker &>/dev/null; then return 0; fi
+    # Remove any partial state from a previous failed run (stale key / broken list
+    # will cause apt-get update to fail on every subsequent run)
+    rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.gpg
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
         | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -338,15 +327,13 @@ _install_docker() {
       "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
         > /etc/apt/sources.list.d/docker.list
-    _wait_apt
-    apt-get update -qq
+    _apt update -qq
     local docker_missing=()
     for p in docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
         _pkg "$p" || docker_missing+=("$p")
     done
     if [[ ${#docker_missing[@]} -gt 0 ]]; then
-        _wait_apt
-        apt-get install -y -qq "${docker_missing[@]}"
+        _apt install -y -qq "${docker_missing[@]}"
     fi
     systemctl enable --now docker
 }
@@ -364,7 +351,7 @@ task "Installing WP-CLI" _install_wpcli
 
 # UFW + SSH hardening — wrapped so task() runs it atomically
 _setup_security() {
-    _pkg ufw || { _wait_apt; apt-get install -y -qq ufw; }
+    _pkg ufw || _apt install -y -qq ufw
 
     ufw --force reset
     ufw default deny incoming
@@ -409,7 +396,7 @@ if [[ "$WP_INSTALL" == "true" ]]; then
     nextstep "Installing WordPress (Nginx + PHP 8.3 + MariaDB)"
 
     _install_nginx() {
-        _pkg nginx || { _wait_apt; apt-get install -y -qq nginx; }
+        _pkg nginx || _apt install -y -qq nginx
         systemctl enable nginx
     }
     task "Installing Nginx" _install_nginx
@@ -422,13 +409,12 @@ if [[ "$WP_INSTALL" == "true" ]]; then
             _pkg "$p" || missing+=("$p")
         done
         [[ ${#missing[@]} -eq 0 ]] && return 0
-        _wait_apt
-        apt-get install -y -qq "${missing[@]}"
+        _apt install -y -qq "${missing[@]}"
     }
     task "Installing PHP 8.3 + extensions" _install_php
 
     _install_mariadb() {
-        _pkg mariadb-server || { _wait_apt; apt-get install -y -qq mariadb-server; }
+        _pkg mariadb-server || _apt install -y -qq mariadb-server
     }
     task "Installing MariaDB" _install_mariadb
 
