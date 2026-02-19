@@ -27,6 +27,26 @@ warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
 die()  { echo -e "${RED}✗ ERROR:${RESET} $*" >&2; exit 1; }
 log()  { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; }
 
+# _pkg <name>  — true if the package is already installed (dpkg knows about it)
+_pkg() { dpkg -s "$1" &>/dev/null 2>&1; }
+
+# _wait_apt  — block until no apt/dpkg lock is held
+# Ubuntu's unattended-upgrades grabs the lock for several minutes after boot.
+_wait_apt() {
+    local waited=0
+    while fuser /var/lib/dpkg/lock-frontend &>/dev/null 2>&1 \
+       || fuser /var/lib/dpkg/lock            &>/dev/null 2>&1 \
+       || fuser /var/lib/apt/lists/lock       &>/dev/null 2>&1; do
+        if [[ $waited -eq 0 ]]; then
+            printf "\r  ${YELLOW}⚠${RESET}  Waiting for apt lock (unattended-upgrades?)...%-10s" ""
+        fi
+        sleep 2
+        (( waited += 2 ))
+    done
+    [[ $waited -gt 0 ]] && \
+        printf "\r  ${GREEN}✓${RESET}  apt lock released after %ds%-40s\n" "$waited" ""
+}
+
 # ── task <label> <cmd> [args...] ──────────────────────────────────────────────
 # Runs cmd in the background. Shows a spinner on ONE line (overwriting it each
 # frame). When the command finishes, replaces the spinner line with ✓ or ✗.
@@ -273,11 +293,26 @@ ok "Configuration collected."
 # ─────────────────────────────────────────────────────────────────────────────
 nextstep "System packages"
 
-task "Updating package lists" \
+_apt_update() {
+    _wait_apt
     apt-get update -qq
+}
+task "Updating package lists" _apt_update
 
-task "Installing curl, git, openssl" \
-    apt-get install -y -qq curl git openssl ca-certificates gnupg lsb-release
+_install_base_pkgs() {
+    local missing=()
+    for p in curl git openssl ca-certificates gnupg lsb-release; do
+        _pkg "$p" || missing+=("$p")
+    done
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        log "Base packages already installed — skipping."
+        return 0
+    fi
+    log "Installing missing packages: ${missing[*]}"
+    _wait_apt
+    apt-get install -y -qq "${missing[@]}"
+}
+task "Installing curl, git, openssl" _install_base_pkgs
 
 # Docker — wrapped in a function because it's multi-step
 _install_docker() {
@@ -290,10 +325,16 @@ _install_docker() {
       "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
         > /etc/apt/sources.list.d/docker.list
+    _wait_apt
     apt-get update -qq
-    apt-get install -y -qq \
-        docker-ce docker-ce-cli containerd.io \
-        docker-buildx-plugin docker-compose-plugin
+    local docker_missing=()
+    for p in docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
+        _pkg "$p" || docker_missing+=("$p")
+    done
+    if [[ ${#docker_missing[@]} -gt 0 ]]; then
+        _wait_apt
+        apt-get install -y -qq "${docker_missing[@]}"
+    fi
     systemctl enable --now docker
 }
 task "Installing Docker" _install_docker
@@ -310,7 +351,7 @@ task "Installing WP-CLI" _install_wpcli
 
 # UFW + SSH hardening — wrapped so task() runs it atomically
 _setup_security() {
-    apt-get install -y -qq ufw
+    _pkg ufw || { _wait_apt; apt-get install -y -qq ufw; }
 
     ufw --force reset
     ufw default deny incoming
@@ -354,20 +395,29 @@ warn "SSH hardened — ensure you have a working SSH key before closing this ses
 if [[ "$WP_INSTALL" == "true" ]]; then
     nextstep "Installing WordPress (Nginx + PHP 8.3 + MariaDB)"
 
-    task "Installing Nginx" \
-        apt-get install -y -qq nginx
-
-    task "Enabling Nginx" \
+    _install_nginx() {
+        _pkg nginx || { _wait_apt; apt-get install -y -qq nginx; }
         systemctl enable nginx
+    }
+    task "Installing Nginx" _install_nginx
 
-    task "Installing PHP 8.3 + extensions" \
-        apt-get install -y -qq \
-            php8.3-fpm php8.3-mysql php8.3-curl php8.3-gd php8.3-mbstring \
-            php8.3-xml php8.3-xmlrpc php8.3-soap php8.3-intl php8.3-zip \
-            php8.3-bcmath php8.3-imagick
+    _install_php() {
+        local missing=()
+        for p in php8.3-fpm php8.3-mysql php8.3-curl php8.3-gd php8.3-mbstring \
+                 php8.3-xml php8.3-xmlrpc php8.3-soap php8.3-intl php8.3-zip \
+                 php8.3-bcmath php8.3-imagick; do
+            _pkg "$p" || missing+=("$p")
+        done
+        [[ ${#missing[@]} -eq 0 ]] && return 0
+        _wait_apt
+        apt-get install -y -qq "${missing[@]}"
+    }
+    task "Installing PHP 8.3 + extensions" _install_php
 
-    task "Installing MariaDB" \
-        apt-get install -y -qq mariadb-server
+    _install_mariadb() {
+        _pkg mariadb-server || { _wait_apt; apt-get install -y -qq mariadb-server; }
+    }
+    task "Installing MariaDB" _install_mariadb
 
     task "Starting MariaDB" \
         systemctl enable --now mariadb
