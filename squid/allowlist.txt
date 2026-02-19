@@ -7,7 +7,6 @@
 .api.anthropic.com
 .api.openai.com
 .api.deepseek.com
-.generativelanguage.googleapis.com
 .googleapis.com
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
