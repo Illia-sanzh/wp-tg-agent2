@@ -5,6 +5,8 @@ Receives messages from the authorized user and forwards them to the
 WordPress AI agent. Streams back the result.
 """
 
+import asyncio
+import json
 import logging
 import os
 import time
@@ -117,67 +119,95 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     model = ctx.user_data.get("model", DEFAULT_MODEL)
 
-    # Send "typing..." indicator
     await update.message.chat.send_action(ChatAction.TYPING)
 
-    # Show a "working" message
-    working_msg = await update.message.reply_text(
-        f"⚙️ Working on it… (model: `{model}`)",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    # Single status message — updated in-place as the agent works
+    status_msg = await update.message.reply_text(f"🤔 Thinking… (`{model}`)", parse_mode=ParseMode.MARKDOWN)
 
-    # Keep typing indicator alive while processing
-    start_time = time.time()
-    try:
-        r = requests.post(
-            f"{AGENT_URL}/task",
-            json={"message": user_text, "model": model},
-            timeout=300,
-        )
-        r.raise_for_status()
-        data = r.json()
-        result = data.get("result", "(no result)")
-        elapsed = data.get("elapsed_seconds", 0)
-    except requests.exceptions.Timeout:
-        result = "⏱️ The task timed out after 5 minutes. It may still be running on the server."
-        elapsed = 300
-    except requests.exceptions.ConnectionError:
-        result = "❌ Agent is unreachable. Check if the containers are running."
-        elapsed = 0
-    except Exception as e:
-        result = f"❌ Error: {e}"
-        elapsed = round(time.time() - start_time, 1)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
 
-    # Delete "working" message
+    def stream_from_agent():
+        """Run in a thread: POSTs to agent and pushes ndjson events into the queue."""
+        try:
+            with requests.post(
+                f"{AGENT_URL}/task",
+                json={"message": user_text, "model": model},
+                stream=True,
+                timeout=310,
+            ) as r:
+                r.raise_for_status()
+                for raw in r.iter_lines(decode_unicode=True):
+                    if raw:
+                        try:
+                            asyncio.run_coroutine_threadsafe(queue.put(json.loads(raw)), loop)
+                        except Exception:
+                            pass
+        except requests.exceptions.Timeout:
+            asyncio.run_coroutine_threadsafe(
+                queue.put({"type": "result", "text": "⏱️ Timed out after 5 minutes.", "elapsed": 300, "model": model}), loop
+            )
+        except requests.exceptions.ConnectionError:
+            asyncio.run_coroutine_threadsafe(
+                queue.put({"type": "result", "text": "❌ Agent is unreachable.", "elapsed": 0, "model": model}), loop
+            )
+        except Exception as e:
+            asyncio.run_coroutine_threadsafe(
+                queue.put({"type": "result", "text": f"❌ Error: {e}", "elapsed": 0, "model": model}), loop
+            )
+        finally:
+            asyncio.run_coroutine_threadsafe(queue.put(None), loop)  # sentinel
+
+    loop.run_in_executor(None, stream_from_agent)
+
+    result = "(no result)"
+    elapsed = 0
+    model_used = model
+
+    while True:
+        event = await queue.get()
+        if event is None:
+            break
+
+        etype = event.get("type")
+
+        if etype == "thinking":
+            try:
+                await status_msg.edit_text("🤔 Thinking…")
+            except Exception:
+                pass
+
+        elif etype == "progress":
+            try:
+                await status_msg.edit_text(event.get("text", "⚙️ Working…"))
+            except Exception:
+                pass
+
+        elif etype == "result":
+            result = event.get("text", "(no result)")
+            elapsed = event.get("elapsed", 0)
+            model_used = event.get("model", model)
+
+    # Remove status message
     try:
-        await working_msg.delete()
+        await status_msg.delete()
     except Exception:
         pass
 
-    # Split long results into chunks (Telegram limit: 4096 chars)
+    # Send final result, split into 4000-char chunks if needed
     MAX_LEN = 4000
-    if len(result) <= MAX_LEN:
-        chunks = [result]
-    else:
-        chunks = []
-        while result:
-            chunks.append(result[:MAX_LEN])
-            result = result[MAX_LEN:]
-
-    footer = f"\n\n_⏱ {elapsed}s • {model}_"
+    chunks = [result[i:i + MAX_LEN] for i in range(0, max(len(result), 1), MAX_LEN)]
+    footer = f"\n\n_⏱ {elapsed}s • {model_used}_"
 
     for i, chunk in enumerate(chunks):
-        text = chunk
-        if i == len(chunks) - 1:
-            text += footer
+        text = chunk + (footer if i == len(chunks) - 1 else "")
         try:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         except Exception:
-            # Fallback: send as plain text if Markdown fails
             try:
                 await update.message.reply_text(text)
             except Exception as e2:
-                logger.error(f"Failed to send message chunk: {e2}")
+                logger.error(f"Failed to send chunk: {e2}")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import httpx
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request, stream_with_context
 from openai import OpenAI
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -286,24 +286,44 @@ def dispatch_tool(name: str, args: dict) -> str:
     else:
         return f"ERROR: Unknown tool '{name}'"
 
+
+def _tool_label(fn_name: str, fn_args: dict) -> str:
+    """One-line human-readable label for a tool call shown in Telegram progress."""
+    if fn_name == "run_command":
+        cmd = fn_args.get("command", "").strip().replace("\n", " ")
+        return f"🖥 {cmd[:120]}"
+    elif fn_name == "wp_rest":
+        return f"🌐 {fn_args.get('method', 'GET')} {fn_args.get('endpoint', '')}"
+    elif fn_name == "wp_cli_remote":
+        return f"🔧 wp {fn_args.get('command', '')[:100]}"
+    return f"⚙️ {fn_name}"
+
+
 # ─── Agentic loop ─────────────────────────────────────────────────────────────
 
-def run_agent(user_message: str, model: str = None) -> str:
+def run_agent(user_message: str, model: str = None):
     """
-    Main agentic loop.
-    Sends the user message to the LLM, handles tool calls, and returns
-    the final text response.
+    Main agentic loop — generator that yields progress events then a final result.
+
+    Yields dicts:
+      {"type": "thinking"}                         — LLM is generating
+      {"type": "progress", "text": "..."}          — tool about to execute
+      {"type": "result", "text": "...",
+       "elapsed": N, "model": "..."}               — final answer
     """
     if model is None:
         model = DEFAULT_MODEL
 
-    messages = [
-        {"role": "user", "content": user_message},
-    ]
-
+    messages = [{"role": "user", "content": user_message}]
+    system_injected = False
+    start = time.time()
     steps = 0
+
     while steps < MAX_STEPS:
         steps += 1
+
+        yield {"type": "thinking"}
+
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -314,10 +334,11 @@ def run_agent(user_message: str, model: str = None) -> str:
                 max_tokens=4096,
             )
         except TypeError:
-            # Some model configurations don't take 'system' as a kwarg;
+            # Some model configurations don't accept 'system' as a kwarg;
             # prepend it as a system message instead.
-            if not any(m.get("role") == "system" for m in messages):
+            if not system_injected:
                 messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+                system_injected = True
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -327,23 +348,25 @@ def run_agent(user_message: str, model: str = None) -> str:
             )
         except Exception as e:
             err = str(e)
-            # If primary model fails, try fallback
             if model != FALLBACK_MODEL:
                 app.logger.warning(f"Model {model} failed ({err}), trying {FALLBACK_MODEL}")
-                return run_agent(user_message, model=FALLBACK_MODEL)
-            return f"AI service error: {err}"
+                yield from run_agent(user_message, model=FALLBACK_MODEL)
+                return
+            yield {"type": "result", "text": f"AI service error: {err}",
+                   "elapsed": round(time.time() - start, 1), "model": model}
+            return
 
         choice = response.choices[0]
         msg = choice.message
-
-        # Add assistant response to history
         messages.append({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls})
 
         # No tool calls → final answer
         if not msg.tool_calls:
-            return msg.content or "(no response)"
+            yield {"type": "result", "text": msg.content or "(no response)",
+                   "elapsed": round(time.time() - start, 1), "model": model}
+            return
 
-        # Execute all tool calls
+        # Execute each tool call, emitting a progress event before each one
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             try:
@@ -351,17 +374,21 @@ def run_agent(user_message: str, model: str = None) -> str:
             except json.JSONDecodeError:
                 fn_args = {}
 
+            yield {"type": "progress", "text": _tool_label(fn_name, fn_args)}
+
             app.logger.info(f"Tool call: {fn_name}({list(fn_args.keys())})")
-            result = dispatch_tool(fn_name, fn_args)
-            app.logger.info(f"  → {result[:200]}")
+            tool_result = dispatch_tool(fn_name, fn_args)
+            app.logger.info(f"  → {tool_result[:200]}")
 
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": result,
+                "content": tool_result,
             })
 
-    return "I've reached the maximum number of steps. The task may be partially complete. Check your WordPress site."
+    yield {"type": "result",
+           "text": "Reached the maximum number of steps. The task may be partially complete.",
+           "elapsed": round(time.time() - start, 1), "model": model}
 
 # ─── Flask API ────────────────────────────────────────────────────────────────
 
@@ -380,14 +407,14 @@ def handle_task():
         return jsonify({"error": "No message provided"}), 400
 
     app.logger.info(f"Task received: {message[:100]}")
-    start = time.time()
 
-    result = run_agent(message, model=model)
+    def generate():
+        for event in run_agent(message, model=model):
+            yield json.dumps(event) + "\n"
+            if event.get("type") == "result":
+                app.logger.info(f"Task done in {event.get('elapsed', '?')}s")
 
-    elapsed = round(time.time() - start, 1)
-    app.logger.info(f"Task completed in {elapsed}s")
-
-    return jsonify({"result": result, "elapsed_seconds": elapsed, "model": model})
+    return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
 
 
 if __name__ == "__main__":
