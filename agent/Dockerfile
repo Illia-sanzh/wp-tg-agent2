@@ -43,4 +43,4 @@ COPY agent.py .
 
 EXPOSE 8080
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "300", "--log-level", "info", "agent:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--worker-class", "gthread", "--workers", "1", "--threads", "4", "--timeout", "360", "--log-level", "info", "agent:app"]

@@ -41,3 +41,8 @@
 .auth.docker.io
 .production.cloudflare.docker.com
 .ghcr.io
+
+# ── Stock image sources (agent image downloads) ───────────────────────────────
+.pexels.com
+.unsplash.com
+.pixabay.com
