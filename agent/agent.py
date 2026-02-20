@@ -538,6 +538,34 @@ def handle_upload():
     return jsonify(result)
 
 
+@app.post("/ask")
+def handle_ask():
+    """Synchronous endpoint for OpenClaw skill integration.
+
+    Runs the full agent loop and returns a single JSON response — no streaming.
+    Used by the wordpress-manager skill via: exec curl -X POST /ask
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    message = data.get("message", "").strip()
+    model = data.get("model", DEFAULT_MODEL)
+    history = data.get("history", [])
+
+    if not message:
+        return jsonify({"error": "No message provided"}), 400
+
+    result_text = "(no result)"
+    elapsed = 0
+    model_used = model
+
+    for event in run_agent(message, model=model, history=history):
+        if event.get("type") == "result":
+            result_text = event.get("text", "(no result)")
+            elapsed = event.get("elapsed", 0)
+            model_used = event.get("model", model)
+
+    return jsonify({"text": result_text, "elapsed": elapsed, "model": model_used})
+
+
 @app.post("/task")
 def handle_task():
     data = request.get_json(force=True, silent=True) or {}

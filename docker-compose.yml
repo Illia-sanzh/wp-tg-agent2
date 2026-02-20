@@ -121,26 +121,50 @@ services:
       retries: 5
       start_period: 20s
 
-  # ── Telegram Bot ──────────────────────────────────────────────────────────
-  # User interface. Relays Telegram messages to the agent.
-  # Telegram API (api.telegram.org) is on the Squid allowlist.
-  openclaw-bot:
-    build:
-      context: ./telegram-bot
-      dockerfile: Dockerfile
-    container_name: openclaw-bot
+  # ── OpenClaw Gateway ──────────────────────────────────────────────────────
+  # Replaces the custom Telegram bot. Handles all messaging channels natively
+  # (Telegram, WhatsApp, Discord, Slack, Signal, etc.) and exposes a web
+  # dashboard at port 18789 (access via Tailscale or SSH tunnel only).
+  #
+  # The wordpress-manager skill (in ./openclaw-workspace/skills/) instructs
+  # OpenClaw's agent to relay WordPress tasks to openclaw-agent:8080/ask.
+  #
+  # Config: ./openclaw-workspace/openclaw.json
+  # Skills: ./openclaw-workspace/skills/
+  #
+  # Image: ghcr.io/openclaw/openclaw:latest
+  # If no pre-built image is available, build from source:
+  #   git clone https://github.com/openclaw/openclaw /tmp/openclaw-src
+  #   docker build -t openclaw:local /tmp/openclaw-src
+  #   Then change 'image:' below to 'openclaw:local'
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-gateway
     restart: unless-stopped
+    volumes:
+      # Workspace contains openclaw.json config + skills/
+      - ./openclaw-workspace:/home/node/.openclaw:rw
     env_file: .env
     environment:
-      AGENT_URL: "http://openclaw-agent:8080"
-      # Telegram long-polling goes through Squid
+      # Route all outbound traffic (Telegram API, AI APIs) through Squid
       HTTPS_PROXY: "http://openclaw-squid:3128"
       HTTP_PROXY: "http://openclaw-squid:3128"
       NO_PROXY: "openclaw-agent,openclaw-litellm,openclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
-    mem_limit: 256m
+      # LiteLLM as the LLM backend (OpenAI-compatible)
+      # If OpenClaw doesn't support custom base URLs, it falls back to ANTHROPIC_API_KEY
+      OPENAI_API_KEY: "${LITELLM_MASTER_KEY}"
+      OPENAI_BASE_URL: "http://openclaw-litellm:4000/v1"
+    ports:
+      # Web dashboard — bound to localhost only.
+      # Access via: ssh -L 18789:localhost:18789 user@server
+      # Or via Tailscale if configured.
+      - "127.0.0.1:18789:18789"
+    mem_limit: 512m
     networks:
-      agent-internal: {}   # No internet route
+      agent-internal: {}   # No direct internet; all traffic via Squid
     depends_on:
+      openclaw-squid:
+        condition: service_healthy
       openclaw-agent:
         condition: service_healthy
 
