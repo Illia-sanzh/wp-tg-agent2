@@ -253,7 +253,6 @@ def wp_rest(method: str, endpoint: str, body: dict = None, params: dict = None) 
             headers=headers,
             auth=auth,
             timeout=30,
-            proxies={"http": None, "https": None},  # Bypass Squid — WP_URL is the user's own site, not an arbitrary domain
         )
         text = resp.text
         if len(text) > MAX_OUTPUT_CHARS:
@@ -278,7 +277,6 @@ def wp_cli_remote(command: str) -> str:
                 "Content-Type": "application/json",
             },
             timeout=60,
-            proxies={"http": None, "https": None},  # Bypass Squid — bridge plugin is on the user's own WordPress server
         )
         data = resp.json()
         return data.get("output", str(data))
@@ -308,7 +306,6 @@ def _upload_media_to_wp(file_bytes: bytes, filename: str, mime_type: str) -> dic
             data=file_bytes,
             auth=(WP_ADMIN_USER, WP_ADMIN_PASSWORD) if WP_ADMIN_PASSWORD and not WP_APP_PASSWORD else None,
             timeout=60,
-            proxies={"http": None, "https": None},
         )
         if resp.status_code in (200, 201):
             d = resp.json()
