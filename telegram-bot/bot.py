@@ -112,34 +112,23 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛑 Task cancelled and conversation history cleared.")
 
 
-# ─── Message handler ──────────────────────────────────────────────────────────
+# ─── Agent streaming helper ───────────────────────────────────────────────────
 
-async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        await update.message.reply_text("⛔ Unauthorized.")
-        return
-
-    user_text = update.message.text.strip()
-    if not user_text:
-        return
-
+async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_text: str):
+    """Stream task_text to the agent and send the result back to the user."""
     model = ctx.user_data.get("model", DEFAULT_MODEL)
     history = ctx.user_data.get("history", [])
 
-    await update.message.chat.send_action(ChatAction.TYPING)
-
-    # Single status message — updated in-place as the agent works
     status_msg = await update.message.reply_text(f"🤔 Thinking… (`{model}`)", parse_mode=ParseMode.MARKDOWN)
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
     def stream_from_agent():
-        """Run in a thread: POSTs to agent and pushes ndjson events into the queue."""
         try:
             with requests.post(
                 f"{AGENT_URL}/task",
-                json={"message": user_text, "model": model, "history": history},
+                json={"message": task_text, "model": model, "history": history},
                 stream=True,
                 timeout=310,
             ) as r:
@@ -163,7 +152,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 queue.put({"type": "result", "text": f"❌ Error: {e}", "elapsed": 0, "model": model}), loop
             )
         finally:
-            asyncio.run_coroutine_threadsafe(queue.put(None), loop)  # sentinel
+            asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
     loop.run_in_executor(None, stream_from_agent)
 
@@ -184,44 +173,36 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         event = await queue.get()
         if event is None:
             break
-
         etype = event.get("type")
-
         if etype == "progress":
             steps.append(event.get("text", "⚙️ Working…"))
             try:
                 await status_msg.edit_text(build_status())
             except Exception:
                 pass
-
         elif etype == "thinking":
             try:
                 await status_msg.edit_text(build_status())
             except Exception:
                 pass
-
         elif etype == "result":
             result = event.get("text", "(no result)")
             elapsed = event.get("elapsed", 0)
             model_used = event.get("model", model)
 
-    # Save this exchange to history (last 5 turns = 10 messages)
     history = ctx.user_data.get("history", [])
-    history.append({"role": "user", "content": user_text})
+    history.append({"role": "user", "content": task_text})
     history.append({"role": "assistant", "content": result})
     ctx.user_data["history"] = history[-10:]
 
-    # Remove status message
     try:
         await status_msg.delete()
     except Exception:
         pass
 
-    # Send final result, split into 4000-char chunks if needed
     MAX_LEN = 4000
     chunks = [result[i:i + MAX_LEN] for i in range(0, max(len(result), 1), MAX_LEN)]
     footer = f"\n\n_⏱ {elapsed}s • {model_used}_"
-
     for i, chunk in enumerate(chunks):
         text = chunk + (footer if i == len(chunks) - 1 else "")
         try:
@@ -231,6 +212,72 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(text)
             except Exception as e2:
                 logger.error(f"Failed to send chunk: {e2}")
+
+
+# ─── Message handler ──────────────────────────────────────────────────────────
+
+async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    user_text = update.message.text.strip()
+    if not user_text:
+        return
+    await update.message.chat.send_action(ChatAction.TYPING)
+    await _run_agent_task(update, ctx, user_text)
+
+
+# ─── Photo handler ────────────────────────────────────────────────────────────
+
+async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+
+    photo = update.message.photo[-1]  # Largest available size
+    caption = (update.message.caption or "").strip()
+
+    status_msg = await update.message.reply_text("📤 Uploading to WordPress media library…")
+
+    tg_file = await photo.get_file()
+    photo_bytes = bytes(await tg_file.download_as_bytearray())
+    filename = f"telegram_{photo.file_id}.jpg"
+
+    try:
+        r = requests.post(
+            f"{AGENT_URL}/upload",
+            files={"file": (filename, photo_bytes, "image/jpeg")},
+            timeout=60,
+        )
+        data = r.json()
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Upload failed: {e}")
+        return
+
+    if "error" in data:
+        await status_msg.edit_text(f"❌ {data['error']}")
+        return
+
+    media_url = data.get("url", "")
+    media_id = data.get("id", "")
+
+    if not caption:
+        await status_msg.edit_text(
+            f"✅ Uploaded to WordPress media library!\n"
+            f"🆔 ID: `{media_id}`\n"
+            f"🔗 {media_url}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Caption present → let the agent act on it
+    await status_msg.delete()
+    task_text = (
+        f"A photo was just uploaded to the WordPress media library "
+        f"(ID: {media_id}, URL: {media_url}). {caption}"
+    )
+    await update.message.chat.send_action(ChatAction.TYPING)
+    await _run_agent_task(update, ctx, task_text)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -249,6 +296,7 @@ def main():
     app.add_handler(CommandHandler("model", cmd_model))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo))
 
     logger.info("Bot is polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

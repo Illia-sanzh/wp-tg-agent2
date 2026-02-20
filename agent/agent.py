@@ -286,6 +286,41 @@ def wp_cli_remote(command: str) -> str:
         return f"ERROR: {e}"
 
 
+def _upload_media_to_wp(file_bytes: bytes, filename: str, mime_type: str) -> dict:
+    """Upload raw bytes to the WordPress media library via REST API."""
+    if not WP_URL:
+        return {"error": "WP_URL not configured."}
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": mime_type,
+    }
+    if WP_APP_PASSWORD:
+        import base64
+        creds = base64.b64encode(f"{WP_ADMIN_USER}:{WP_APP_PASSWORD}".encode()).decode()
+        headers["Authorization"] = f"Basic {creds}"
+
+    url = WP_URL.rstrip("/") + "/wp-json/wp/v2/media"
+    try:
+        resp = requests.post(
+            url,
+            headers=headers,
+            data=file_bytes,
+            auth=(WP_ADMIN_USER, WP_ADMIN_PASSWORD) if WP_ADMIN_PASSWORD and not WP_APP_PASSWORD else None,
+            timeout=60,
+            proxies={},
+        )
+        if resp.status_code in (200, 201):
+            d = resp.json()
+            return {
+                "id": d.get("id"),
+                "url": d.get("source_url") or d.get("guid", {}).get("rendered", ""),
+            }
+        return {"error": f"WordPress returned HTTP {resp.status_code}: {resp.text[:300]}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def dispatch_tool(name: str, args: dict) -> str:
     """Route a tool call to the right function."""
     if name == "run_command":
@@ -435,6 +470,22 @@ def run_agent(user_message: str, model: str = None, history: list = None):
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "model": DEFAULT_MODEL})
+
+
+@app.post("/upload")
+def handle_upload():
+    """Receive a photo from the bot and push it to the WordPress media library."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file in request"}), 400
+    f = request.files["file"]
+    result = _upload_media_to_wp(
+        f.read(),
+        f.filename or "upload.jpg",
+        f.content_type or "image/jpeg",
+    )
+    if "error" in result:
+        return jsonify(result), 502
+    return jsonify(result)
 
 
 @app.post("/task")
