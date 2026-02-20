@@ -538,6 +538,15 @@ EOF
 }
 task "Writing .env" _write_env
 
+_write_openclaw_config() {
+    local cfg="$SCRIPT_DIR/openclaw-workspace/openclaw.json"
+    [[ -f "$cfg" ]] || return 0
+    sed -i "s|TELEGRAM_BOT_TOKEN_VALUE|${TELEGRAM_BOT_TOKEN}|g"       "$cfg"
+    sed -i "s|TELEGRAM_ADMIN_USER_ID_VALUE|${TELEGRAM_ADMIN_USER_ID}|g" "$cfg"
+    sed -i "s|LITELLM_MASTER_KEY_VALUE|${LITELLM_MASTER_KEY}|g"        "$cfg"
+}
+task "Writing openclaw-workspace/openclaw.json" _write_openclaw_config
+
 _update_gitignore() {
     grep -q "^\.env$"      .gitignore 2>/dev/null || echo ".env"        >> .gitignore
     grep -q "install\.log" .gitignore 2>/dev/null || echo "install.log" >> .gitignore
@@ -623,9 +632,13 @@ task "Pulling LiteLLM image" \
 
 # Squid is now built from ./squid/Dockerfile, no separate pull needed.
 # Agent + bot + squid all built together.
-task "Building agent, bot, and Squid images" \
-    docker compose build --no-cache \
+task "Building agent and Squid images" \
+    docker compose build --no-cache openclaw-agent openclaw-squid \
     || die "Docker build failed. Check $LOG_FILE"
+
+task "Pulling OpenClaw Gateway image" \
+    docker pull ghcr.io/openclaw/openclaw:latest \
+    || die "OpenClaw image pull failed. Check $LOG_FILE"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 5 or 6 — Start containers
@@ -638,7 +651,7 @@ task "Starting all containers" \
 
 # ── Wait for healthy with a single updating line ───────────────────────────────
 echo
-SERVICES=("openclaw-squid" "openclaw-litellm" "openclaw-agent" "openclaw-bot")
+SERVICES=("openclaw-squid" "openclaw-litellm" "openclaw-agent" "openclaw-gateway")
 TOTAL_SVC=${#SERVICES[@]}
 MAX_WAIT=120
 INTERVAL=5
@@ -750,11 +763,15 @@ echo "  Admin user:    $WP_ADMIN_USER"
     echo "  App password:  ${WP_APP_PASSWORD}  ← agent uses this"
 echo
 
-echo -e "  ${BOLD}━━━ Telegram Bot ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo "  Open Telegram, message your bot, then send:"
-echo "    /start"
+echo -e "  ${BOLD}━━━ OpenClaw Gateway ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo "  Web dashboard:  http://localhost:18789  (SSH tunnel or Tailscale)"
+echo "  Access via SSH tunnel:  ssh -L 18789:localhost:18789 root@<server-ip>"
+echo
+echo "  Open Telegram, message your bot, then type:"
 echo "    Show me all installed plugins"
 echo "    Create a draft blog post about getting started with WordPress"
+echo
+echo "  Other channels: configure in openclaw-workspace/openclaw.json"
 echo
 
 echo -e "  ${BOLD}━━━ Management ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
