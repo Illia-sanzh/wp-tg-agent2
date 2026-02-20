@@ -374,6 +374,10 @@ def run_agent(user_message: str, model: str = None, history: list = None):
                    "elapsed": round(time.time() - start, 1), "model": model}
             return
 
+        if not response.choices:
+            yield {"type": "result", "text": "AI service returned an empty response.",
+                   "elapsed": round(time.time() - start, 1), "model": model}
+            return
         choice = response.choices[0]
         msg = choice.message
         messages.append({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls})
@@ -432,10 +436,19 @@ def handle_task():
     app.logger.info(f"Task received: {message[:100]}")
 
     def generate():
-        for event in run_agent(message, model=model, history=history):
-            yield json.dumps(event) + "\n"
-            if event.get("type") == "result":
-                app.logger.info(f"Task done in {event.get('elapsed', '?')}s")
+        try:
+            for event in run_agent(message, model=model, history=history):
+                yield json.dumps(event) + "\n"
+                if event.get("type") == "result":
+                    app.logger.info(f"Task done in {event.get('elapsed', '?')}s")
+        except Exception as e:
+            app.logger.exception("Unhandled exception in streaming generator")
+            yield json.dumps({
+                "type": "result",
+                "text": f"❌ Internal agent error: {e}",
+                "elapsed": 0,
+                "model": model,
+            }) + "\n"
 
     return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
 
