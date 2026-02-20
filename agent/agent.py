@@ -566,6 +566,49 @@ def handle_ask():
     return jsonify({"text": result_text, "elapsed": elapsed, "model": model_used})
 
 
+@app.post("/run")
+def handle_run():
+    """Execute a WP-CLI or bash command directly — no LLM, no agent loop.
+
+    Used by the OpenClaw wordpress-manager skill for Level 3 integration.
+    OpenClaw's own LLM plans which commands to run; this endpoint is the executor.
+
+    Body:
+      {"command": "wp plugin list --format=json"}
+      {"command": "wp post update 42 {content_file}", "content": "<!-- wp:paragraph -->..."}
+
+    - WP-CLI commands auto-receive --path and --allow-root.
+    - If 'content' is provided it is written to /tmp/wp-content.html and
+      '{content_file}' in the command is replaced with that path.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    command = data.get("command", "").strip()
+    content = data.get("content")
+
+    if not command:
+        return jsonify({"error": "No command provided"}), 400
+
+    # Write optional content to a temp file (for post/page content updates)
+    if content is not None:
+        content_path = "/tmp/wp-content.html"
+        try:
+            with open(content_path, "w") as fh:
+                fh.write(content)
+            command = command.replace("{content_file}", content_path)
+        except Exception as e:
+            return jsonify({"error": f"Failed to write content file: {e}"}), 500
+
+    # Auto-inject WP-CLI path and root flags
+    if command.startswith("wp "):
+        if "--path=" not in command:
+            command = f"{command} --path={WP_PATH}"
+        if "--allow-root" not in command:
+            command = f"{command} --allow-root"
+
+    output = run_command(command)
+    return jsonify({"output": output})
+
+
 @app.post("/task")
 def handle_task():
     data = request.get_json(force=True, silent=True) or {}

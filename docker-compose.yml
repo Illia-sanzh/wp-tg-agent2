@@ -150,6 +150,8 @@ services:
       HTTPS_PROXY: "http://openclaw-squid:3128"
       HTTP_PROXY: "http://openclaw-squid:3128"
       NO_PROXY: "openclaw-agent,openclaw-litellm,openclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
+      # Dashboard auth token — required to log into the web UI
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN}"
       # LiteLLM as the LLM backend (OpenAI-compatible)
       # If OpenClaw doesn't support custom base URLs, it falls back to ANTHROPIC_API_KEY
       OPENAI_API_KEY: "${LITELLM_MASTER_KEY}"
