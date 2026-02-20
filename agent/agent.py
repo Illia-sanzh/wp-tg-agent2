@@ -86,11 +86,12 @@ def load_system_prompt() -> str:
 5. After each command, check the output before proceeding.
 6. When done, give a concise human-readable summary of what was accomplished.
 7. If something fails, explain why and what the user should do.
-8. NEVER run: wp db drop, wp db reset, wp site empty, wp eval, wp shell.
-9. ALWAYS use --allow-root when running wp commands.
-10. For destructive operations, always ask for confirmation first (respond without running).
-11. If WP-CLI fails with a database error, switch to wp_rest immediately — do NOT investigate MySQL, read wp-config.php, run mysql commands, or check service status.
-12. NEVER run: nmap, nc, netstat, ss, mysqladmin, mysqld, service mysql, systemctl mysql, mysql -u, mysqld_safe, ps aux | grep mysql.
+8. Always set the `reason` field on every tool call with a short plain-English description of what you are doing (e.g. "Installing Elementor plugin", "Fetching list of published posts").
+9. NEVER run: wp db drop, wp db reset, wp site empty, wp eval, wp shell.
+10. ALWAYS use --allow-root when running wp commands.
+11. For destructive operations, always ask for confirmation first (respond without running).
+12. If WP-CLI fails with a database error, switch to wp_rest immediately — do NOT investigate MySQL, read wp-config.php, run mysql commands, or check service status.
+13. NEVER run: nmap, nc, netstat, ss, mysqladmin, mysqld, service mysql, systemctl mysql, mysql -u, mysqld_safe, ps aux | grep mysql.
 
 ## WordPress Mode: {wp_mode.upper()}
 {"You have direct WP-CLI access. Use: wp --path=" + WP_PATH + " --allow-root" if wp_mode == "local" else "WordPress is remote. Use wp_rest or wp_cli_remote tools."}
@@ -117,7 +118,11 @@ TOOLS = [
                     "command": {
                         "type": "string",
                         "description": "The bash command to execute.",
-                    }
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "One short sentence describing what this step does in plain English, shown to the user.",
+                    },
                 },
                 "required": ["command"],
             },
@@ -152,6 +157,10 @@ TOOLS = [
                         "type": "object",
                         "description": "Query string parameters as key-value pairs.",
                     },
+                    "reason": {
+                        "type": "string",
+                        "description": "One short sentence describing what this step does in plain English, shown to the user.",
+                    },
                 },
                 "required": ["method", "endpoint"],
             },
@@ -172,7 +181,11 @@ TOOLS = [
                     "command": {
                         "type": "string",
                         "description": "WP-CLI command without the 'wp' prefix. E.g.: 'plugin list --format=json'",
-                    }
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "One short sentence describing what this step does in plain English, shown to the user.",
+                    },
                 },
                 "required": ["command"],
             },
@@ -292,9 +305,11 @@ def dispatch_tool(name: str, args: dict) -> str:
 
 def _tool_label(fn_name: str, fn_args: dict) -> str:
     """One-line human-readable label for a tool call shown in Telegram progress."""
+    reason = (fn_args.get("reason") or "").strip()
     if fn_name == "run_command":
+        if reason:
+            return f"🖥 {reason[:120]}"
         cmd = fn_args.get("command") or ""
-        # Find first non-empty, non-comment, non-heredoc-content line
         first_line = ""
         for line in cmd.splitlines():
             stripped = line.strip()
@@ -302,14 +317,17 @@ def _tool_label(fn_name: str, fn_args: dict) -> str:
                 first_line = stripped
                 break
         if not first_line:
-            # Fallback: show the first 80 chars of the raw command (collapsed whitespace)
             first_line = " ".join(cmd.split())[:80] or "(command)"
         return f"🖥 {first_line[:110]}"
     elif fn_name == "wp_rest":
+        if reason:
+            return f"🌐 {reason[:120]}"
         return f"🌐 {fn_args.get('method', 'GET')} {fn_args.get('endpoint', '')}"
     elif fn_name == "wp_cli_remote":
+        if reason:
+            return f"🔧 {reason[:120]}"
         return f"🔧 wp {fn_args.get('command', '')[:100]}"
-    return f"⚙️ {fn_name}"
+    return f"⚙️ {reason or fn_name}"
 
 
 # ─── Agentic loop ─────────────────────────────────────────────────────────────
