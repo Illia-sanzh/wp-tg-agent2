@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     php-xml \
     php-mbstring \
     php-zip \
+    php-gd \
     curl \
     ca-certificates \
     python3 \
