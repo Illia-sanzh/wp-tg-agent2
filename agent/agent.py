@@ -285,28 +285,81 @@ def wp_cli_remote(command: str) -> str:
 
 
 def _upload_media_to_wp(file_bytes: bytes, filename: str, mime_type: str) -> dict:
-    """Upload raw bytes to the WordPress media library via REST API."""
+    """Upload raw bytes to the WordPress media library.
+
+    Local mode  → WP-CLI media import (no credentials required).
+    Remote mode → WordPress REST API with Application Password.
+    """
+    import uuid
+
+    # ── Local mode: WP-CLI (no credentials needed) ────────────────────────────
+    if Path(WP_PATH).exists() and os.listdir(WP_PATH):
+        safe_name = re.sub(r"[^\w.\-]", "_", filename)
+        tmp_path = f"/tmp/openclaw-upload-{uuid.uuid4().hex[:8]}-{safe_name}"
+        try:
+            with open(tmp_path, "wb") as fh:
+                fh.write(file_bytes)
+            # Import the file; --porcelain returns just the attachment ID
+            result = subprocess.run(
+                f"wp media import {tmp_path} --porcelain --path={WP_PATH} --allow-root",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={**os.environ, "HOME": "/root"},
+            )
+            output = (result.stdout + result.stderr).strip()
+            # Extract numeric ID (may have extra text on failure)
+            attachment_id = None
+            for token in output.split():
+                if token.isdigit():
+                    attachment_id = int(token)
+                    break
+            if result.returncode != 0 or attachment_id is None:
+                return {"error": f"WP-CLI media import failed: {output[:300]}"}
+            # Retrieve the public URL
+            url_result = subprocess.run(
+                f"wp post get {attachment_id} --field=guid --path={WP_PATH} --allow-root",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "HOME": "/root"},
+            )
+            media_url = url_result.stdout.strip()
+            return {"id": attachment_id, "url": media_url}
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    # ── Remote mode: REST API ─────────────────────────────────────────────────
     if not WP_URL:
         return {"error": "WP_URL not configured."}
+    if not WP_APP_PASSWORD and not WP_ADMIN_PASSWORD:
+        return {"error": (
+            "No WordPress credentials configured for remote upload. "
+            "Set WP_APP_PASSWORD (Application Password) in .env"
+        )}
 
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Content-Type": mime_type,
     }
+    auth = None
     if WP_APP_PASSWORD:
         import base64
         creds = base64.b64encode(f"{WP_ADMIN_USER}:{WP_APP_PASSWORD}".encode()).decode()
         headers["Authorization"] = f"Basic {creds}"
+    elif WP_ADMIN_PASSWORD:
+        auth = (WP_ADMIN_USER, WP_ADMIN_PASSWORD)
 
     url = WP_URL.rstrip("/") + "/wp-json/wp/v2/media"
     try:
-        resp = requests.post(
-            url,
-            headers=headers,
-            data=file_bytes,
-            auth=(WP_ADMIN_USER, WP_ADMIN_PASSWORD) if WP_ADMIN_PASSWORD and not WP_APP_PASSWORD else None,
-            timeout=60,
-        )
+        resp = requests.post(url, headers=headers, data=file_bytes, auth=auth, timeout=60)
         if resp.status_code in (200, 201):
             d = resp.json()
             return {
