@@ -45,6 +45,16 @@ ADMIN_USER_IDS = {
 AGENT_URL     = os.environ.get("AGENT_URL", "http://openclaw-agent:8080")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "claude-sonnet-4-6")
 
+# ── Smart model routing ───────────────────────────────────────────────────────
+# When AUTO_ROUTING=true the bot picks the cheapest model that can handle the
+# task instead of always using DEFAULT_MODEL.
+#   FAST_MODEL  — simple lookups, status checks, short queries
+#   DEFAULT_MODEL — content creation, plugin management, typical tasks
+#   SMART_MODEL — multi-step analysis, debugging, complex reasoning
+AUTO_ROUTING = os.environ.get("AUTO_ROUTING", "false").lower() == "true"
+FAST_MODEL   = os.environ.get("FAST_MODEL",  "claude-haiku-4-5")
+SMART_MODEL  = os.environ.get("SMART_MODEL", DEFAULT_MODEL)
+
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
@@ -55,6 +65,53 @@ logger = logging.getLogger(__name__)
 
 def is_admin(update: Update) -> bool:
     return update.effective_user.id in ADMIN_USER_IDS
+
+# ─── Smart model routing ──────────────────────────────────────────────────────
+
+_FAST_KEYWORDS = {
+    "show", "list", "get", "fetch", "find", "check", "count", "display",
+    "status", "health", "ping", "version", "info", "which", "who",
+    "what is", "what are", "how many", "is there", "are there",
+}
+_SMART_KEYWORDS = {
+    "analyze", "analyse", "audit", "debug", "diagnose", "investigate",
+    "optimize", "optimise", "review", "evaluate", "compare",
+    "migrate", "migration", "restructure", "refactor",
+    "comprehensive", "thorough", "complete", "detailed", "full report",
+    "performance", "security", "vulnerability", "why is", "why does",
+    "figure out", "root cause", "step by step",
+}
+
+def _auto_select_model(message: str) -> tuple[str, str]:
+    """
+    Classify message complexity and return (model_name, tier_label).
+
+    Tiers:
+      fast     — simple lookups / status queries      → FAST_MODEL
+      standard — typical WP management tasks           → DEFAULT_MODEL
+      smart    — multi-step analysis / complex tasks   → SMART_MODEL
+    """
+    msg   = message.lower().strip()
+    words = msg.split()
+    n     = len(words)
+
+    # ── Smart signals ─────────────────────────────────────────────────────────
+    # Long messages almost always mean multi-step or complex intent
+    if n > 80:
+        return SMART_MODEL, "smart"
+    # 4+ "and" connectors = chained task chain
+    if msg.count(" and ") >= 3:
+        return SMART_MODEL, "smart"
+    if any(kw in msg for kw in _SMART_KEYWORDS):
+        return SMART_MODEL, "smart"
+
+    # ── Fast signals ──────────────────────────────────────────────────────────
+    # Only apply fast tier for short messages that contain a lookup keyword
+    if n <= 15 and any(kw in msg for kw in _FAST_KEYWORDS):
+        return FAST_MODEL, "fast"
+
+    # ── Standard (default) ────────────────────────────────────────────────────
+    return DEFAULT_MODEL, "standard"
 
 # ─── Command handlers ─────────────────────────────────────────────────────────
 
@@ -90,9 +147,11 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         whisper = d.get("whisper", "unknown")
         jobs    = d.get("scheduled_jobs", 0)
         skills  = d.get("custom_skills", 0)
+        routing_mode = "auto (smart routing on)" if AUTO_ROUTING else "manual"
         await update.message.reply_text(
             f"✅ Agent online\n"
-            f"Model: `{d.get('model', 'unknown')}`\n"
+            f"Default model: `{d.get('model', 'unknown')}`\n"
+            f"Model routing: `{routing_mode}`\n"
             f"Scheduler: `{d.get('scheduler', 'unknown')}` ({jobs} job(s))\n"
             f"Custom skills: `{skills}`\n"
             f"Voice (Whisper): `{whisper}`",
@@ -107,29 +166,49 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     args = ctx.args
     if not args:
-        current = ctx.user_data.get("model", DEFAULT_MODEL)
+        manual = ctx.user_data.get("model")
+        if AUTO_ROUTING and not manual:
+            current_line = (
+                f"Current: *auto-routing* 🧠\n"
+                f"  Fast  → `{FAST_MODEL}`\n"
+                f"  Standard → `{DEFAULT_MODEL}`\n"
+                f"  Smart → `{SMART_MODEL}`\n\n"
+                "Use `/model auto` to keep routing on, or pick a model to lock it in."
+            )
+        else:
+            current_line = f"Current model: `{manual or DEFAULT_MODEL}`"
+            if AUTO_ROUTING:
+                current_line += " _(auto-routing overridden)_\nUse `/model auto` to re-enable routing."
         await update.message.reply_text(
-            f"Current model: `{current}`\n\n"
+            f"{current_line}\n\n"
             "*Built-in models:*\n"
             "• `claude-sonnet-4-6` — default, best quality\n"
             "• `claude-haiku-4-5` — fast & cheap\n"
-            "• `gpt-4o`\n"
-            "• `gpt-4o-mini`\n"
+            "• `claude-opus-4-6` — hardest tasks\n"
+            "• `gpt-4o` / `gpt-4o-mini`\n"
             "• `deepseek-chat`\n"
             "• `gemini-2.0-flash`\n\n"
             "*OpenRouter models* (prefix with `openrouter/`):\n"
             "• `openrouter/llama-3.3-70b`\n"
             "• `openrouter/mistral-large`\n"
-            "• `openrouter/gemma-3-27b`\n"
             "• `openrouter/qwq-32b`\n"
             "• Any model from openrouter.ai\n\n"
-            "Usage: `/model deepseek-chat`",
+            "Usage: `/model deepseek-chat` — lock in a model\n"
+            "Usage: `/model auto` — re-enable smart routing",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
-    model = args[0].strip()
-    ctx.user_data["model"] = model
-    await update.message.reply_text(f"✅ Switched to model: `{model}`", parse_mode=ParseMode.MARKDOWN)
+    choice = args[0].strip()
+    if choice == "auto":
+        ctx.user_data.pop("model", None)
+        status = "✅ Auto-routing re-enabled." if AUTO_ROUTING else (
+            "ℹ️ Auto-routing is disabled in .env (AUTO_ROUTING=false). "
+            "The default model will be used."
+        )
+        await update.message.reply_text(status)
+    else:
+        ctx.user_data["model"] = choice
+        await update.message.reply_text(f"✅ Locked to model: `{choice}`", parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -248,10 +327,21 @@ async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_text: str):
     """Stream task_text to the agent and send the result back to the user."""
-    model   = ctx.user_data.get("model", DEFAULT_MODEL)
-    history = ctx.user_data.get("history", [])
+    manual_model = ctx.user_data.get("model")   # set by /model command
+    history      = ctx.user_data.get("history", [])
 
-    status_msg = await update.message.reply_text(f"🤔 Thinking… (`{model}`)", parse_mode=ParseMode.MARKDOWN)
+    if manual_model:
+        model      = manual_model
+        model_hint = f"`{model}`"
+    elif AUTO_ROUTING:
+        model, tier = _auto_select_model(task_text)
+        tier_badge  = {"fast": " · ⚡ fast", "smart": " · 🧠 smart", "standard": ""}.get(tier, "")
+        model_hint  = f"`{model}`{tier_badge}"
+    else:
+        model      = DEFAULT_MODEL
+        model_hint = f"`{model}`"
+
+    status_msg = await update.message.reply_text(f"🤔 Thinking… ({model_hint})", parse_mode=ParseMode.MARKDOWN)
 
     loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
