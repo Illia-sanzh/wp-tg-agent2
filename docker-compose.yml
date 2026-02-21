@@ -108,6 +108,9 @@ services:
       - ./SKILL.md:/app/SKILL.md:ro
       - ./openclaw-config:/app/config:ro
       - agent-tmp:/tmp/wp-agent
+      # Persistent data for APScheduler's SQLite job store.
+      # Scheduled tasks survive container restarts because of this volume.
+      - agent-data:/app/data
     mem_limit: 1152m
     networks:
       agent-internal: {}   # No internet route
@@ -147,6 +150,8 @@ services:
 volumes:
   squid-logs:
   agent-tmp:
+  # Scheduler SQLite database — persists scheduled jobs across restarts
+  agent-data:
 
 networks:
   # All agent/bot containers live here. internal:true = NO internet routing.

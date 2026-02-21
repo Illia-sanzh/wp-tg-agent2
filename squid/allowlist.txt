@@ -11,6 +11,8 @@
 .api.openai.com
 .api.deepseek.com
 .googleapis.com
+# OpenRouter — routes to all LLM providers (Llama, Mistral, Gemma, etc.)
+.openrouter.ai
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 .api.telegram.org
