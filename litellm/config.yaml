@@ -67,9 +67,58 @@ model_list:
       api_key: os.environ/GEMINI_API_KEY
 
   # ── OpenRouter (access to ALL models via one API key) ─────────────────────
-  # Set OPENROUTER_API_KEY in .env. Browse all models at https://openrouter.ai/models
-  # Switch to any model with: /model openrouter/<slug>
-  # Example slugs: openrouter/llama-3.3-70b, openrouter/mistral-large, etc.
+  # Set OPENROUTER_API_KEY in .env. Browse all slugs at https://openrouter.ai/models
+  # Only OPENROUTER_API_KEY is needed — no separate provider keys required.
+  #
+  # Claude via OpenRouter (openrouter/anthropic/<slug>)
+  # If a slug returns "model not found", check the exact ID at openrouter.ai/models.
+  - model_name: openrouter/claude-sonnet-4-6
+    litellm_params:
+      model: openrouter/anthropic/claude-sonnet-4-5
+      api_key: os.environ/OPENROUTER_API_KEY
+      max_tokens: 8192
+
+  - model_name: openrouter/claude-opus-4-6
+    litellm_params:
+      model: openrouter/anthropic/claude-opus-4-5
+      api_key: os.environ/OPENROUTER_API_KEY
+      max_tokens: 8192
+
+  - model_name: openrouter/claude-haiku-4-5
+    litellm_params:
+      model: openrouter/anthropic/claude-haiku-4-5
+      api_key: os.environ/OPENROUTER_API_KEY
+      max_tokens: 4096
+
+  # GPT via OpenRouter
+  - model_name: openrouter/gpt-4o
+    litellm_params:
+      model: openrouter/openai/gpt-4o
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: openrouter/gpt-4o-mini
+    litellm_params:
+      model: openrouter/openai/gpt-4o-mini
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # Gemini via OpenRouter
+  - model_name: openrouter/gemini-2.0-flash
+    litellm_params:
+      model: openrouter/google/gemini-2.0-flash-001
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # DeepSeek via OpenRouter
+  - model_name: openrouter/deepseek-chat
+    litellm_params:
+      model: openrouter/deepseek/deepseek-chat-v3-0324
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: openrouter/deepseek-r1
+    litellm_params:
+      model: openrouter/deepseek/deepseek-r1
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # Other popular open-source models via OpenRouter
   - model_name: openrouter/llama-3.3-70b
     litellm_params:
       model: openrouter/meta-llama/llama-3.3-70b-instruct
@@ -88,11 +137,6 @@ model_list:
   - model_name: openrouter/qwq-32b
     litellm_params:
       model: openrouter/qwen/qwq-32b
-      api_key: os.environ/OPENROUTER_API_KEY
-
-  - model_name: openrouter/deepseek-r1
-    litellm_params:
-      model: openrouter/deepseek/deepseek-r1
       api_key: os.environ/OPENROUTER_API_KEY
 
 # ─────────────────────────────────────────────────────────────────────────────

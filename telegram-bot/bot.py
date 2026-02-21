@@ -60,12 +60,20 @@ SMART_MODEL  = os.environ.get("SMART_MODEL", DEFAULT_MODEL)
 # Any openrouter/* slug is forwarded by LiteLLM, so we allow the prefix too.
 _KNOWN_MODELS = {
     "auto",
+    # Direct provider keys
     "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6",
     "gpt-4o", "gpt-4o-mini",
     "deepseek-chat", "deepseek-reasoner",
     "gemini-2.0-flash",
+    # Claude via OpenRouter (OPENROUTER_API_KEY only — no Anthropic key needed)
+    "openrouter/claude-sonnet-4-6", "openrouter/claude-haiku-4-5", "openrouter/claude-opus-4-6",
+    # GPT via OpenRouter
+    "openrouter/gpt-4o", "openrouter/gpt-4o-mini",
+    # Other providers via OpenRouter
+    "openrouter/gemini-2.0-flash",
+    "openrouter/deepseek-chat", "openrouter/deepseek-r1",
     "openrouter/llama-3.3-70b", "openrouter/mistral-large",
-    "openrouter/gemma-3-27b", "openrouter/qwq-32b", "openrouter/deepseek-r1",
+    "openrouter/gemma-3-27b", "openrouter/qwq-32b",
 }
 
 def _is_valid_model(name: str) -> bool:
@@ -123,8 +131,11 @@ def _auto_select_model(message: str) -> tuple[str, str]:
         return SMART_MODEL, "smart"
 
     # ── Fast signals ──────────────────────────────────────────────────────────
-    # Only apply fast tier for short messages that contain a lookup keyword
+    # Short messages with a lookup keyword are clearly simple queries
     if n <= 15 and any(kw in msg for kw in _FAST_KEYWORDS):
+        return FAST_MODEL, "fast"
+    # Very short messages (greetings, one-word commands) also go to fast tier
+    if n <= 5:
         return FAST_MODEL, "fast"
 
     # ── Standard (default) ────────────────────────────────────────────────────
@@ -210,12 +221,13 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "• `deepseek-chat` / `deepseek-reasoner`\n\n"
             "*Google:*\n"
             "• `gemini-2.0-flash`\n\n"
-            "*OpenRouter* (one key → every LLM):\n"
-            "• `openrouter/llama-3.3-70b`\n"
-            "• `openrouter/mistral-large`\n"
-            "• `openrouter/qwq-32b`\n"
-            "• `openrouter/deepseek-r1`\n"
-            "• Any slug from openrouter.ai (prefix with `openrouter/`)\n\n"
+            "*Via OpenRouter* (only OPENROUTER\\_API\\_KEY needed):\n"
+            "• `openrouter/claude-sonnet-4-6` / `openrouter/claude-opus-4-6` / `openrouter/claude-haiku-4-5`\n"
+            "• `openrouter/gpt-4o` / `openrouter/gpt-4o-mini`\n"
+            "• `openrouter/gemini-2.0-flash`\n"
+            "• `openrouter/deepseek-chat` / `openrouter/deepseek-r1`\n"
+            "• `openrouter/llama-3.3-70b` · `openrouter/mistral-large` · `openrouter/qwq-32b`\n"
+            "• Any slug from openrouter.ai — prefix with `openrouter/`\n\n"
             "Usage: `/model claude-opus-4-6` — lock to a model\n"
             "Usage: `/model auto` — enable smart routing",
             parse_mode=ParseMode.MARKDOWN,
