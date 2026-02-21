@@ -55,6 +55,23 @@ AUTO_ROUTING = os.environ.get("AUTO_ROUTING", "false").lower() == "true"
 FAST_MODEL   = os.environ.get("FAST_MODEL",  "claude-haiku-4-5")
 SMART_MODEL  = os.environ.get("SMART_MODEL", DEFAULT_MODEL)
 
+# ── Known model names (must match litellm/config.yaml entries) ────────────────
+# "auto" is a special keyword that re-enables smart routing.
+# Any openrouter/* slug is forwarded by LiteLLM, so we allow the prefix too.
+_KNOWN_MODELS = {
+    "auto",
+    "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6",
+    "gpt-4o", "gpt-4o-mini",
+    "deepseek-chat", "deepseek-reasoner",
+    "gemini-2.0-flash",
+    "openrouter/llama-3.3-70b", "openrouter/mistral-large",
+    "openrouter/gemma-3-27b", "openrouter/qwq-32b", "openrouter/deepseek-r1",
+}
+
+def _is_valid_model(name: str) -> bool:
+    """Return True if name is a recognised model or an openrouter/* slug."""
+    return name in _KNOWN_MODELS or name.startswith("openrouter/")
+
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
@@ -181,20 +198,26 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 current_line += " _(auto-routing overridden)_\nUse `/model auto` to re-enable routing."
         await update.message.reply_text(
             f"{current_line}\n\n"
-            "*Built-in models:*\n"
+            "*Select a model:*\n"
+            "• `auto` — smart routing ⚡/◆/🧠 (picks cheapest that fits)\n\n"
+            "*Anthropic:*\n"
             "• `claude-sonnet-4-6` — default, best quality\n"
             "• `claude-haiku-4-5` — fast & cheap\n"
-            "• `claude-opus-4-6` — hardest tasks\n"
-            "• `gpt-4o` / `gpt-4o-mini`\n"
-            "• `deepseek-chat`\n"
+            "• `claude-opus-4-6` — hardest tasks\n\n"
+            "*OpenAI:*\n"
+            "• `gpt-4o` / `gpt-4o-mini`\n\n"
+            "*DeepSeek:*\n"
+            "• `deepseek-chat` / `deepseek-reasoner`\n\n"
+            "*Google:*\n"
             "• `gemini-2.0-flash`\n\n"
-            "*OpenRouter models* (prefix with `openrouter/`):\n"
+            "*OpenRouter* (one key → every LLM):\n"
             "• `openrouter/llama-3.3-70b`\n"
             "• `openrouter/mistral-large`\n"
             "• `openrouter/qwq-32b`\n"
-            "• Any model from openrouter.ai\n\n"
-            "Usage: `/model deepseek-chat` — lock in a model\n"
-            "Usage: `/model auto` — re-enable smart routing",
+            "• `openrouter/deepseek-r1`\n"
+            "• Any slug from openrouter.ai (prefix with `openrouter/`)\n\n"
+            "Usage: `/model claude-opus-4-6` — lock to a model\n"
+            "Usage: `/model auto` — enable smart routing",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -206,6 +229,13 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "The default model will be used."
         )
         await update.message.reply_text(status)
+    elif not _is_valid_model(choice):
+        await update.message.reply_text(
+            f"❌ Unknown model: `{choice}`\n\n"
+            "Use `/model` to see the list of available models.\n"
+            "For OpenRouter, prefix with `openrouter/` — e.g. `openrouter/llama-3.3-70b`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
     else:
         ctx.user_data["model"] = choice
         await update.message.reply_text(f"✅ Locked to model: `{choice}`", parse_mode=ParseMode.MARKDOWN)

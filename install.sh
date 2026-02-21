@@ -153,6 +153,79 @@ case "$provider_choice" in
     *) die "Invalid choice." ;;
 esac
 
+# ── OpenRouter (optional) ─────────────────────────────────────────────────────
+echo
+echo -e "  ${BOLD}OpenRouter${RESET}  ${CYAN}(optional)${RESET}"
+echo "  One key gives you access to ALL LLMs — Llama, Mistral, Gemma, DeepSeek-R1, and more."
+echo "  Get a free key at: https://openrouter.ai/keys   Leave blank to skip."
+echo
+OPENROUTER_API_KEY=""
+read -rsp "  OpenRouter API key: " OPENROUTER_API_KEY; echo
+if [[ -n "$OPENROUTER_API_KEY" ]]; then
+    ok "OpenRouter enabled — use any model with /model openrouter/<slug> in Telegram."
+else
+    ok "Skipping OpenRouter (add OPENROUTER_API_KEY to .env later to enable)."
+fi
+
+# ── Voice recognition ─────────────────────────────────────────────────────────
+echo
+echo -e "  ${BOLD}Voice Recognition${RESET}  ${CYAN}(Whisper)${RESET}"
+echo "  Lets users send voice notes to the bot — transcribed automatically."
+echo "  Requires an OpenAI API key."
+echo
+WHISPER_ENABLED=false
+if [[ -n "$OPENAI_API_KEY" ]]; then
+    read -rp "  Enable voice recognition? [Y/n]: " _voice; _voice="${_voice:-Y}"
+    [[ "$_voice" =~ ^[Yy]$ ]] && WHISPER_ENABLED=true && ok "Voice recognition enabled."
+else
+    warn "You don't have an OpenAI key set. Voice recognition won't work without one."
+    read -rsp "  Enter OpenAI API key now to enable voice recognition (blank to skip): " _voicekey; echo
+    if [[ -n "$_voicekey" ]]; then
+        OPENAI_API_KEY="$_voicekey"
+        WHISPER_ENABLED=true
+        ok "OpenAI key set — voice recognition enabled."
+    else
+        ok "Skipping voice recognition (add OPENAI_API_KEY to .env later to enable it)."
+    fi
+fi
+
+# ── Smart model routing ───────────────────────────────────────────────────────
+echo
+echo -e "  ${BOLD}Smart Model Routing${RESET}  ${CYAN}(optional)${RESET}"
+echo "  Automatically picks the cheapest model that handles each task:"
+echo "    ⚡ Fast    — simple lookups  (\"show all plugins\", \"what's the site title?\")"
+echo "    ◆ Standard — typical tasks   (create posts, install plugins, WooCommerce)"
+echo "    🧠 Smart   — complex work    (debug, audit, multi-step analysis)"
+echo
+AUTO_ROUTING="false"
+FAST_MODEL=""
+SMART_MODEL=""
+read -rp "  Enable smart model routing? [y/N]: " _routing; _routing="${_routing:-N}"
+if [[ "$_routing" =~ ^[Yy]$ ]]; then
+    AUTO_ROUTING="true"
+    # Pick sensible defaults based on the selected provider
+    case "$DEFAULT_MODEL" in
+        claude-*)  _def_fast="claude-haiku-4-5"  ; _def_smart="claude-opus-4-6"   ;;
+        gpt-*)     _def_fast="gpt-4o-mini"        ; _def_smart="gpt-4o"            ;;
+        deepseek*) _def_fast="deepseek-chat"      ; _def_smart="deepseek-reasoner" ;;
+        gemini*)   _def_fast="gemini-2.0-flash"   ; _def_smart="gemini-2.0-flash"  ;;
+        *)         _def_fast="claude-haiku-4-5"   ; _def_smart="claude-opus-4-6"   ;;
+    esac
+    echo
+    echo "  Recommended defaults for your provider:"
+    echo "    Fast:     $_def_fast"
+    echo "    Standard: $DEFAULT_MODEL  (already set above)"
+    echo "    Smart:    $_def_smart"
+    echo
+    read -rp "  Fast model   [default=$_def_fast]:  " _fast_in
+    read -rp "  Smart model  [default=$_def_smart]: " _smart_in
+    FAST_MODEL="${_fast_in:-$_def_fast}"
+    SMART_MODEL="${_smart_in:-$_def_smart}"
+    ok "Smart routing on: ⚡ $FAST_MODEL | ◆ $DEFAULT_MODEL | 🧠 $SMART_MODEL"
+else
+    ok "Smart routing off — all requests use: $DEFAULT_MODEL"
+fi
+
 echo
 read -rp "  Monthly AI spend limit in USD [default=20]: \$" MONTHLY_BUDGET
 MONTHLY_BUDGET="${MONTHLY_BUDGET:-20}"
@@ -517,10 +590,15 @@ ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 OPENAI_API_KEY=${OPENAI_API_KEY}
 DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
 GEMINI_API_KEY=${GEMINI_API_KEY}
+OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
 
 DEFAULT_MODEL=${DEFAULT_MODEL}
 FALLBACK_MODEL=${FALLBACK_MODEL}
 MONTHLY_BUDGET_USD=${MONTHLY_BUDGET}
+
+AUTO_ROUTING=${AUTO_ROUTING}
+FAST_MODEL=${FAST_MODEL}
+SMART_MODEL=${SMART_MODEL}
 
 LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
 
@@ -748,6 +826,25 @@ echo "  Admin user:    $WP_ADMIN_USER"
     echo -e "  Admin pass:    ${YELLOW}${WP_ADMIN_PASSWORD}${RESET}  ← save this!"
 [[ -n "$WP_APP_PASSWORD" ]] && \
     echo "  App password:  ${WP_APP_PASSWORD}  ← agent uses this"
+echo
+
+echo -e "  ${BOLD}━━━ Features ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+if [[ "$WHISPER_ENABLED" == "true" ]]; then
+    echo "  Voice recognition:  ✓ enabled  (send voice notes to the bot)"
+else
+    echo "  Voice recognition:  ✗ disabled  (add OPENAI_API_KEY to .env to enable)"
+fi
+if [[ "$AUTO_ROUTING" == "true" ]]; then
+    echo "  Smart routing:      ✓ enabled"
+    echo "    ⚡ Fast:     $FAST_MODEL"
+    echo "    ◆ Standard: $DEFAULT_MODEL"
+    echo "    🧠 Smart:   $SMART_MODEL"
+else
+    echo "  Smart routing:      ✗ off  (all requests use $DEFAULT_MODEL)"
+fi
+[[ -n "$OPENROUTER_API_KEY" ]] \
+    && echo "  OpenRouter:         ✓ enabled  (use /model openrouter/<slug> in Telegram)" \
+    || echo "  OpenRouter:         ✗ disabled  (add OPENROUTER_API_KEY to .env to enable)"
 echo
 
 echo -e "  ${BOLD}━━━ Telegram Bot ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
