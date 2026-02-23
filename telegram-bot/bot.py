@@ -11,9 +11,10 @@ Features:
   • /start         → welcome + feature list
   • /status        → agent health check
   • /model         → show or switch AI model
-  • /cancel        → clear conversation history
+  • /cancel        → clear conversation history (also cancels active flows)
   • /tasks         → list / cancel scheduled tasks
-  • /skill         → list or reload custom skills
+  • /skill         → list, create, show, delete, reload custom skills
+  • /mcp           → list, install, remove, reload MCP tool servers
 """
 
 import asyncio
@@ -46,30 +47,19 @@ AGENT_URL     = os.environ.get("AGENT_URL", "http://openclaw-agent:8080")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "claude-sonnet-4-6")
 
 # ── Smart model routing ───────────────────────────────────────────────────────
-# When AUTO_ROUTING=true the bot picks the cheapest model that can handle the
-# task instead of always using DEFAULT_MODEL.
-#   FAST_MODEL  — simple lookups, status checks, short queries
-#   DEFAULT_MODEL — content creation, plugin management, typical tasks
-#   SMART_MODEL — multi-step analysis, debugging, complex reasoning
 AUTO_ROUTING = os.environ.get("AUTO_ROUTING", "false").lower() == "true"
 FAST_MODEL   = os.environ.get("FAST_MODEL",  "claude-haiku-4-5")
 SMART_MODEL  = os.environ.get("SMART_MODEL", DEFAULT_MODEL)
 
 # ── Known model names (must match litellm/config.yaml entries) ────────────────
-# "auto" is a special keyword that re-enables smart routing.
-# Any openrouter/* slug is forwarded by LiteLLM, so we allow the prefix too.
 _KNOWN_MODELS = {
     "auto",
-    # Direct provider keys
     "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6",
     "gpt-4o", "gpt-4o-mini",
     "deepseek-chat", "deepseek-reasoner",
     "gemini-2.0-flash",
-    # Claude via OpenRouter (OPENROUTER_API_KEY only — no Anthropic key needed)
     "openrouter/claude-sonnet-4-6", "openrouter/claude-haiku-4-5", "openrouter/claude-opus-4-6",
-    # GPT via OpenRouter
     "openrouter/gpt-4o", "openrouter/gpt-4o-mini",
-    # Other providers via OpenRouter
     "openrouter/gemini-2.0-flash",
     "openrouter/deepseek-chat", "openrouter/deepseek-r1",
     "openrouter/llama-3.3-70b", "openrouter/mistral-large",
@@ -77,8 +67,274 @@ _KNOWN_MODELS = {
 }
 
 def _is_valid_model(name: str) -> bool:
-    """Return True if name is a recognised model or an openrouter/* slug."""
     return name in _KNOWN_MODELS or name.startswith("openrouter/")
+
+# ── MCP Catalog ───────────────────────────────────────────────────────────────
+# Curated list of installable MCP servers.  Each entry carries:
+#   package     — exact npm package name
+#   description — one-line description shown in /mcp list
+#   category    — grouping for display
+#   env         — list of env var dicts: {name, hint, required}
+#
+# The whitelist enforced by mcp-runner.js is derived from this catalog.
+# Adding a new MCP requires a code change here AND in mcp-runner/mcp-runner.js.
+
+_MCP_CATALOG: dict[str, dict] = {
+
+    # ── Utility / No auth ─────────────────────────────────────────────────────
+    "server-fetch": {
+        "package":     "@modelcontextprotocol/server-fetch",
+        "description": "Fetch any URL and convert to clean markdown",
+        "category":    "Utility",
+        "env": [],
+    },
+    "server-memory": {
+        "package":     "@modelcontextprotocol/server-memory",
+        "description": "Persistent key-value knowledge graph between sessions",
+        "category":    "Utility",
+        "env": [],
+    },
+    "server-filesystem": {
+        "package":     "@modelcontextprotocol/server-filesystem",
+        "description": "Read, write and search files in allowed directories",
+        "category":    "Utility",
+        "env": [],
+    },
+    "server-sequentialthinking": {
+        "package":     "@modelcontextprotocol/server-sequentialthinking",
+        "description": "Dynamic step-by-step reasoning with reflection",
+        "category":    "Utility",
+        "env": [],
+    },
+    "server-time": {
+        "package":     "@modelcontextprotocol/server-time",
+        "description": "Current time, timezone conversion",
+        "category":    "Utility",
+        "env": [],
+    },
+    "server-everything": {
+        "package":     "@modelcontextprotocol/server-everything",
+        "description": "Reference/test server — useful for debugging",
+        "category":    "Utility",
+        "env": [],
+    },
+
+    # ── Databases ─────────────────────────────────────────────────────────────
+    "server-postgres": {
+        "package":     "@modelcontextprotocol/server-postgres",
+        "description": "Query and inspect PostgreSQL databases",
+        "category":    "Database",
+        "env": [
+            {"name": "POSTGRES_URL",
+             "hint": "Full connection string, e.g. postgresql://user:pass@host:5432/dbname",
+             "required": True},
+        ],
+    },
+    "server-sqlite": {
+        "package":     "@modelcontextprotocol/server-sqlite",
+        "description": "Read/write SQLite databases on the local filesystem",
+        "category":    "Database",
+        "env": [],
+    },
+    "supabase": {
+        "package":     "@supabase/mcp-server-supabase",
+        "description": "Manage Supabase projects, databases, storage and edge functions",
+        "category":    "Database",
+        "env": [
+            {"name": "SUPABASE_ACCESS_TOKEN",
+             "hint": "Personal access token from app.supabase.com/account/tokens",
+             "required": True},
+        ],
+    },
+    "qdrant": {
+        "package":     "@qdrant/mcp-server-qdrant",
+        "description": "Store and query vector embeddings for semantic memory",
+        "category":    "Database",
+        "env": [
+            {"name": "QDRANT_URL",
+             "hint": "Your Qdrant instance URL, e.g. http://localhost:6333 or cloud URL",
+             "required": True},
+            {"name": "QDRANT_API_KEY",
+             "hint": "Qdrant Cloud API key (skip for local instances)",
+             "required": False},
+        ],
+    },
+    "duckdb": {
+        "package":     "@motherduck/mcp-server-duckdb",
+        "description": "Query DuckDB and MotherDuck cloud warehouse",
+        "category":    "Database",
+        "env": [
+            {"name": "motherduck_token",
+             "hint": "MotherDuck token from app.motherduck.com (optional for local DuckDB)",
+             "required": False},
+        ],
+    },
+
+    # ── Search ────────────────────────────────────────────────────────────────
+    "brave-search": {
+        "package":     "@brave/brave-search-mcp-server",
+        "description": "Web, news, image and video search via Brave Search API",
+        "category":    "Search",
+        "env": [
+            {"name": "BRAVE_API_KEY",
+             "hint": "API key from brave.com/search/api — free tier available",
+             "required": True},
+        ],
+    },
+    "tavily": {
+        "package":     "tavily-mcp",
+        "description": "AI-optimised web search, extract, crawl (great for research)",
+        "category":    "Search",
+        "env": [
+            {"name": "TAVILY_API_KEY",
+             "hint": "API key from app.tavily.com — free tier includes 1 000 req/month",
+             "required": True},
+        ],
+    },
+    "exa": {
+        "package":     "exa-mcp-server",
+        "description": "Neural web search — academic papers, LinkedIn, real-time results",
+        "category":    "Search",
+        "env": [
+            {"name": "EXA_API_KEY",
+             "hint": "API key from exa.ai/api — free trial available",
+             "required": True},
+        ],
+    },
+    "firecrawl": {
+        "package":     "@mendable/firecrawl-mcp",
+        "description": "Advanced web scraping, crawling and structured data extraction",
+        "category":    "Search",
+        "env": [
+            {"name": "FIRECRAWL_API_KEY",
+             "hint": "API key from firecrawl.dev — free tier available",
+             "required": True},
+        ],
+    },
+    "server-google-maps": {
+        "package":     "@modelcontextprotocol/server-google-maps",
+        "description": "Geocoding, directions, place search via Google Maps",
+        "category":    "Search",
+        "env": [
+            {"name": "GOOGLE_MAPS_API_KEY",
+             "hint": "API key from console.cloud.google.com — enable Maps JavaScript API",
+             "required": True},
+        ],
+    },
+
+    # ── Developer tools ───────────────────────────────────────────────────────
+    "server-github": {
+        "package":     "@modelcontextprotocol/server-github",
+        "description": "GitHub repos, issues, PRs, file search, code review",
+        "category":    "Developer",
+        "env": [
+            {"name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+             "hint": "Classic token from github.com/settings/tokens — needs repo + read:org",
+             "required": True},
+        ],
+    },
+    "cloudflare": {
+        "package":     "@cloudflare/mcp-server-cloudflare",
+        "description": "Manage Cloudflare Workers, KV, R2, D1, DNS zones",
+        "category":    "Developer",
+        "env": [
+            {"name": "CLOUDFLARE_API_TOKEN",
+             "hint": "API token from dash.cloudflare.com/profile/api-tokens",
+             "required": True},
+            {"name": "CLOUDFLARE_ACCOUNT_ID",
+             "hint": "Account ID from the right sidebar of your Cloudflare dashboard",
+             "required": True},
+        ],
+    },
+    "sentry": {
+        "package":     "@sentry/mcp-server",
+        "description": "Query Sentry errors, issues, releases and performance data",
+        "category":    "Developer",
+        "env": [
+            {"name": "SENTRY_AUTH_TOKEN",
+             "hint": "Auth token from sentry.io/settings/account/api/auth-tokens/",
+             "required": True},
+            {"name": "SENTRY_ORG",
+             "hint": "Your Sentry organisation slug (shown in URL: sentry.io/organizations/<slug>)",
+             "required": False},
+        ],
+    },
+    "vercel": {
+        "package":     "@open-mcp/vercel",
+        "description": "Manage Vercel deployments, projects, domains and env vars",
+        "category":    "Developer",
+        "env": [
+            {"name": "VERCEL_API_KEY",
+             "hint": "Token from vercel.com/account/tokens",
+             "required": True},
+        ],
+    },
+
+    # ── Productivity / Project management ─────────────────────────────────────
+    "notion": {
+        "package":     "@notionhq/notion-mcp-server",
+        "description": "Search, read and write Notion pages and databases",
+        "category":    "Productivity",
+        "env": [
+            {"name": "NOTION_TOKEN",
+             "hint": "Integration token from notion.so/profile/integrations — create an internal integration",
+             "required": True},
+        ],
+    },
+    "linear": {
+        "package":     "linear-mcp-server",
+        "description": "Create and manage Linear issues, projects and cycles",
+        "category":    "Productivity",
+        "env": [
+            {"name": "LINEAR_API_KEY",
+             "hint": "Personal API key from linear.app/settings/api",
+             "required": True},
+        ],
+    },
+
+    # ── Communication ─────────────────────────────────────────────────────────
+    "server-slack": {
+        "package":     "@modelcontextprotocol/server-slack",
+        "description": "Read/write Slack messages, list channels, manage threads",
+        "category":    "Communication",
+        "env": [
+            {"name": "SLACK_BOT_TOKEN",
+             "hint": "Bot User OAuth token (xoxb-...) from api.slack.com/apps > OAuth & Permissions",
+             "required": True},
+            {"name": "SLACK_TEAM_ID",
+             "hint": "Workspace ID starting with T — shown in workspace URL or admin panel",
+             "required": True},
+        ],
+    },
+
+    # ── Payments / E-commerce ─────────────────────────────────────────────────
+    "stripe": {
+        "package":     "@stripe/mcp",
+        "description": "Query Stripe customers, payments, subscriptions and webhooks",
+        "category":    "Payments",
+        "env": [
+            {"name": "STRIPE_SECRET_KEY",
+             "hint": "Secret key from dashboard.stripe.com/apikeys — use test key (sk_test_...) first",
+             "required": True},
+        ],
+    },
+    "shopify": {
+        "package":     "shopify-mcp-server",
+        "description": "Manage Shopify products, orders, customers and collections",
+        "category":    "Payments",
+        "env": [
+            {"name": "SHOPIFY_ACCESS_TOKEN",
+             "hint": "Admin API access token from your Shopify app settings",
+             "required": True},
+            {"name": "MYSHOPIFY_DOMAIN",
+             "hint": "Your store domain, e.g. mystore.myshopify.com",
+             "required": True},
+        ],
+    },
+}
+
+# Derived whitelist — package names only (used for fast lookup)
+_MCP_WHITELIST: dict[str, str] = {k: v["package"] for k, v in _MCP_CATALOG.items()}
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -108,38 +364,40 @@ _SMART_KEYWORDS = {
 }
 
 def _auto_select_model(message: str) -> tuple[str, str]:
-    """
-    Classify message complexity and return (model_name, tier_label).
-
-    Tiers:
-      fast     — simple lookups / status queries      → FAST_MODEL
-      standard — typical WP management tasks           → DEFAULT_MODEL
-      smart    — multi-step analysis / complex tasks   → SMART_MODEL
-    """
     msg   = message.lower().strip()
     words = msg.split()
     n     = len(words)
 
-    # ── Smart signals ─────────────────────────────────────────────────────────
-    # Long messages almost always mean multi-step or complex intent
     if n > 80:
         return SMART_MODEL, "smart"
-    # 4+ "and" connectors = chained task chain
     if msg.count(" and ") >= 3:
         return SMART_MODEL, "smart"
     if any(kw in msg for kw in _SMART_KEYWORDS):
         return SMART_MODEL, "smart"
 
-    # ── Fast signals ──────────────────────────────────────────────────────────
-    # Short messages with a lookup keyword are clearly simple queries
     if n <= 15 and any(kw in msg for kw in _FAST_KEYWORDS):
         return FAST_MODEL, "fast"
-    # Very short messages (greetings, one-word commands) also go to fast tier
     if n <= 5:
         return FAST_MODEL, "fast"
 
-    # ── Standard (default) ────────────────────────────────────────────────────
     return DEFAULT_MODEL, "standard"
+
+# ─── Flow state helpers ────────────────────────────────────────────────────────
+# Instead of ConversationHandler, we use user_data to track multi-step flows.
+# This keeps all routing in one place and doesn't require restructuring handlers.
+
+def _clear_flows(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear any active skill-create, skill-delete, or MCP-install flow."""
+    for key in ("skill_draft", "skill_step", "pending_skill_delete",
+                "mcp_draft", "mcp_step"):
+        ctx.user_data.pop(key, None)
+
+def _in_flow(ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    return bool(
+        ctx.user_data.get("skill_step")
+        or ctx.user_data.get("pending_skill_delete")
+        or ctx.user_data.get("mcp_step")
+    )
 
 # ─── Command handlers ─────────────────────────────────────────────────────────
 
@@ -160,7 +418,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/status`  — check agent health\n"
         "`/model`   — show or change AI model\n"
         "`/tasks`   — list or cancel scheduled tasks\n"
-        "`/skill`   — list or reload custom skills\n"
+        "`/skill`   — manage custom skills\n"
+        "`/mcp`     — manage MCP tool servers\n"
         "`/cancel`  — cancel current task & clear history",
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -175,6 +434,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         whisper = d.get("whisper", "unknown")
         jobs    = d.get("scheduled_jobs", 0)
         skills  = d.get("custom_skills", 0)
+        mcps    = d.get("mcp_tools", 0)
         routing_mode = "auto (smart routing on)" if AUTO_ROUTING else "manual"
         await update.message.reply_text(
             f"✅ Agent online\n"
@@ -182,6 +442,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Model routing: `{routing_mode}`\n"
             f"Scheduler: `{d.get('scheduler', 'unknown')}` ({jobs} job(s))\n"
             f"Custom skills: `{skills}`\n"
+            f"MCP tools: `{mcps}`\n"
             f"Voice (Whisper): `{whisper}`",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -256,9 +517,14 @@ async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
+    in_flow = _in_flow(ctx)
+    _clear_flows(ctx)
     ctx.user_data.pop("running", None)
     ctx.user_data.pop("history", None)
-    await update.message.reply_text("🛑 Task cancelled and conversation history cleared.")
+    if in_flow:
+        await update.message.reply_text("🛑 Flow cancelled and conversation history cleared.")
+    else:
+        await update.message.reply_text("🛑 Task cancelled and conversation history cleared.")
 
 
 async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -268,7 +534,6 @@ async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     args = ctx.args or []
 
-    # /tasks cancel <job_id>
     if args and args[0].lower() == "cancel":
         if len(args) < 2:
             await update.message.reply_text("Usage: `/tasks cancel <job_id>`", parse_mode=ParseMode.MARKDOWN)
@@ -288,7 +553,6 @@ async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Error: {e}")
         return
 
-    # /tasks — list all
     try:
         r = requests.get(f"{AGENT_URL}/schedules", timeout=10)
         data = r.json()
@@ -318,15 +582,24 @@ async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+# ─── /skill command ───────────────────────────────────────────────────────────
+
 async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """List loaded custom skills or trigger a reload."""
+    """
+    /skill              — list custom skills + built-ins
+    /skill reload       — hot-reload YAML files from disk
+    /skill show <name>  — show raw YAML for a skill
+    /skill delete <name>— delete skill (asks for confirmation)
+    /skill create       — guided multi-step skill creation flow
+    """
     if not is_admin(update):
         return
 
     args = ctx.args or []
+    sub  = args[0].lower() if args else ""
 
-    # /skill reload
-    if args and args[0].lower() == "reload":
+    # ── reload ────────────────────────────────────────────────────────────────
+    if sub == "reload":
         try:
             r = requests.post(f"{AGENT_URL}/reload-skills", timeout=15)
             data = r.json()
@@ -341,7 +614,55 @@ async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Reload failed: {e}")
         return
 
-    # /skill — list
+    # ── show <name> ────────────────────────────────────────────────────────────
+    if sub == "show":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: `/skill show <name>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        name = args[1]
+        try:
+            r = requests.get(f"{AGENT_URL}/skills/{name}", timeout=10)
+            if r.status_code == 404:
+                await update.message.reply_text(f"❌ Skill `{name}` not found.", parse_mode=ParseMode.MARKDOWN)
+                return
+            data = r.json()
+            raw_yaml = data.get("yaml", "(empty)")
+            await update.message.reply_text(
+                f"📄 *Skill:* `{name}`\n\n```\n{raw_yaml}\n```",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        return
+
+    # ── delete <name> ──────────────────────────────────────────────────────────
+    if sub == "delete":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: `/skill delete <name>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        name = args[1]
+        ctx.user_data["pending_skill_delete"] = name
+        await update.message.reply_text(
+            f"⚠️ Are you sure you want to delete skill `{name}`?\n\nType `yes` to confirm or `/cancel` to abort.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── create ─────────────────────────────────────────────────────────────────
+    if sub == "create":
+        _clear_flows(ctx)
+        ctx.user_data["skill_draft"] = {}
+        ctx.user_data["skill_step"]  = "name"
+        await update.message.reply_text(
+            "🛠️ *Create a new skill* — Step 1/5\n\n"
+            "What is the skill *name*?\n"
+            "_(alphanumeric + underscores only, e.g. `check_ssl`)_\n\n"
+            "Type `/cancel` at any time to abort.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # ── list (default) ─────────────────────────────────────────────────────────
     try:
         r = requests.get(f"{AGENT_URL}/skills", timeout=10)
         data = r.json()
@@ -353,23 +674,501 @@ async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     custom  = data.get("custom", [])
 
     builtin_text = "\n".join(f"• `{n}`" for n in builtin)
-    custom_text  = "\n".join(f"• `{n}`" for n in custom) if custom else "_(none — add YAML files to openclaw-config/skills/)_"
+    custom_text  = "\n".join(f"• `{n}`" for n in custom) if custom else "_(none)_"
 
     await update.message.reply_text(
         f"🔌 *Custom Skills:*\n{custom_text}\n\n"
         f"⚙️ *Built-in Tools:*\n{builtin_text}\n\n"
-        "To add a skill: create a `.yaml` file in `openclaw-config/skills/` on the server.\n"
-        "See `openclaw-config/skills/README.md` for the format.\n\n"
-        "To reload after adding: `/skill reload`",
+        "Sub-commands:\n"
+        "• `/skill create` — guided skill creation\n"
+        "• `/skill show <name>` — view skill YAML\n"
+        "• `/skill delete <name>` — remove a skill\n"
+        "• `/skill reload` — reload from disk",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+async def handle_skill_create_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Handle one step of the multi-step skill creation flow.
+    Returns True if message was consumed by this flow.
+    """
+    step  = ctx.user_data.get("skill_step")
+    draft = ctx.user_data.get("skill_draft", {})
+    text  = update.message.text.strip()
+
+    if not step:
+        return False
+
+    # ── Step 1: name ──────────────────────────────────────────────────────────
+    if step == "name":
+        import re
+        if not re.match(r"^[a-zA-Z0-9_]+$", text):
+            await update.message.reply_text(
+                "❌ Invalid name. Use only letters, numbers, and underscores.\n\nTry again:"
+            )
+            return True
+        draft["name"] = text
+        ctx.user_data["skill_draft"] = draft
+        ctx.user_data["skill_step"]  = "type"
+        await update.message.reply_text(
+            "🛠️ *Create a new skill* — Step 2/5\n\n"
+            f"Name: `{text}`\n\n"
+            "What *type* of skill?\n"
+            "• `command` — runs a shell command on the server\n"
+            "• `http` — calls an external HTTP API\n"
+            "• `webhook` — sends a POST to a URL",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True
+
+    # ── Step 2: type ──────────────────────────────────────────────────────────
+    if step == "type":
+        if text.lower() not in ("command", "http", "webhook"):
+            await update.message.reply_text("❌ Please reply with: `command`, `http`, or `webhook`", parse_mode=ParseMode.MARKDOWN)
+            return True
+        draft["type"] = text.lower()
+        ctx.user_data["skill_draft"] = draft
+        ctx.user_data["skill_step"]  = "cmd_or_url"
+        if draft["type"] == "command":
+            await update.message.reply_text(
+                "🛠️ *Create a new skill* — Step 3/5\n\n"
+                "Enter the *shell command* to run.\n"
+                "Use `{param_name}` for parameters, e.g.:\n"
+                "`df -h {path}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await update.message.reply_text(
+                "🛠️ *Create a new skill* — Step 3/5\n\n"
+                "Enter the *URL* for the API endpoint.\n"
+                "Use `{param_name}` for URL path variables, e.g.:\n"
+                "`https://api.example.com/check/{domain}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        return True
+
+    # ── Step 3: command or URL ────────────────────────────────────────────────
+    if step == "cmd_or_url":
+        if draft["type"] == "command":
+            draft["command"] = text
+        else:
+            draft["url"] = text
+        ctx.user_data["skill_draft"] = draft
+        ctx.user_data["skill_step"]  = "description"
+        await update.message.reply_text(
+            "🛠️ *Create a new skill* — Step 4/5\n\n"
+            "Enter a *description* the AI will use to decide when to call this skill.\n"
+            "Be specific! Or type `skip` for a default description.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True
+
+    # ── Step 4: description ───────────────────────────────────────────────────
+    if step == "description":
+        if text.lower() != "skip":
+            draft["description"] = text
+        ctx.user_data["skill_draft"] = draft
+        ctx.user_data["skill_step"]  = "params"
+        await update.message.reply_text(
+            "🛠️ *Create a new skill* — Step 5/5\n\n"
+            "Add *parameters*? Enter one per line:\n"
+            "`name|description|type|required`\n\n"
+            "Example:\n"
+            "`query|The search query|string|true`\n"
+            "`limit|Max results|integer|false`\n\n"
+            "Or type `none` for no parameters.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True
+
+    # ── Step 5: parameters → preview ─────────────────────────────────────────
+    if step == "params":
+        params = []
+        if text.lower() != "none":
+            for line in text.splitlines():
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) >= 2:
+                    params.append({
+                        "name":        parts[0],
+                        "description": parts[1] if len(parts) > 1 else "",
+                        "type":        parts[2] if len(parts) > 2 else "string",
+                        "required":    parts[3].lower() == "true" if len(parts) > 3 else False,
+                    })
+        draft["parameters"] = params
+        ctx.user_data["skill_draft"] = draft
+        ctx.user_data["skill_step"]  = "confirm"
+
+        # Build YAML preview
+        import yaml as _yaml
+        preview = _yaml.dump(draft, default_flow_style=False, allow_unicode=True).strip()
+        await update.message.reply_text(
+            "🛠️ *Preview your skill:*\n\n"
+            f"```\n{preview}\n```\n\n"
+            "Type `save` to create it, or `/cancel` to abort.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True
+
+    # ── Step 6: confirm ────────────────────────────────────────────────────────
+    if step == "confirm":
+        if text.lower() != "save":
+            await update.message.reply_text("Type `save` to confirm, or `/cancel` to abort.", parse_mode=ParseMode.MARKDOWN)
+            return True
+        import yaml as _yaml
+        raw_yaml = _yaml.dump(draft, default_flow_style=False, allow_unicode=True)
+        try:
+            r = requests.post(f"{AGENT_URL}/skills", json={"yaml": raw_yaml}, timeout=15)
+            data = r.json()
+            if "error" in data:
+                await update.message.reply_text(f"❌ Failed to create skill:\n{data['error']}")
+            else:
+                name = data.get("name", draft.get("name", "?"))
+                _clear_flows(ctx)
+                await update.message.reply_text(
+                    f"✅ Skill `{name}` created! The agent can now use it immediately.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error saving skill: {e}")
+        return True
+
+    return False
+
+
+async def handle_skill_delete_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle the 'yes' confirmation for /skill delete."""
+    pending = ctx.user_data.get("pending_skill_delete")
+    if not pending:
+        return False
+
+    text = update.message.text.strip().lower()
+    if text == "yes":
+        try:
+            r = requests.delete(f"{AGENT_URL}/skills/{pending}", timeout=10)
+            data = r.json()
+            ctx.user_data.pop("pending_skill_delete", None)
+            if "error" in data:
+                await update.message.reply_text(f"❌ {data['error']}")
+            else:
+                await update.message.reply_text(f"✅ Skill `{pending}` deleted.", parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+    else:
+        await update.message.reply_text(
+            f"Type `yes` to confirm deletion of `{pending}`, or `/cancel` to abort.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    return True
+
+
+# ─── /mcp command ─────────────────────────────────────────────────────────────
+
+async def cmd_mcp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    /mcp                    — list installed MCPs + tool counts
+    /mcp install <name>     — install a whitelisted MCP (guided)
+    /mcp remove <name>      — remove an installed MCP
+    /mcp tools <name>       — list tools from a specific MCP
+    /mcp reload             — reload MCP tools into the agent
+    """
+    if not is_admin(update):
+        return
+
+    args = ctx.args or []
+    sub  = args[0].lower() if args else ""
+
+    # ── reload ────────────────────────────────────────────────────────────────
+    if sub == "reload":
+        try:
+            r = requests.post(f"{AGENT_URL}/reload-mcps", timeout=15)
+            data = r.json()
+            loaded = data.get("loaded", 0)
+            tools  = data.get("tools", [])
+            tools_text = "\n".join(f"• `{t}`" for t in tools) if tools else "_(none)_"
+            await update.message.reply_text(
+                f"🔄 MCP tools reloaded — {loaded} tool(s) active:\n\n{tools_text}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Reload failed: {e}")
+        return
+
+    # ── tools <name> ──────────────────────────────────────────────────────────
+    if sub == "tools":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: `/mcp tools <name>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        mcp_name = args[1]
+        try:
+            r = requests.get(f"{AGENT_URL}/mcps/{mcp_name}/tools", timeout=10)
+            if r.status_code == 404:
+                await update.message.reply_text(f"❌ MCP `{mcp_name}` not found.", parse_mode=ParseMode.MARKDOWN)
+                return
+            data = r.json()
+            tools = data.get("tools", [])
+            if not tools:
+                await update.message.reply_text(f"MCP `{mcp_name}` has no tools.", parse_mode=ParseMode.MARKDOWN)
+                return
+            lines = [f"🔧 *Tools in `{mcp_name}`:*\n"]
+            for t in tools:
+                lines.append(f"• `{t['name']}` — {t.get('description', '')[:80]}")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        return
+
+    # ── remove <name> ─────────────────────────────────────────────────────────
+    if sub == "remove":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: `/mcp remove <name>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        mcp_name = args[1]
+        try:
+            r = requests.delete(f"{AGENT_URL}/mcps/{mcp_name}", timeout=15)
+            data = r.json()
+            if "error" in data:
+                await update.message.reply_text(f"❌ {data['error']}")
+            else:
+                await update.message.reply_text(
+                    f"✅ MCP `{mcp_name}` removed. Use `/mcp reload` to update the agent's tool list.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        return
+
+    # ── available — show full catalog grouped by category ─────────────────────
+    if sub == "available":
+        cats: dict[str, list] = {}
+        for slug, info in _MCP_CATALOG.items():
+            cat = info["category"]
+            cats.setdefault(cat, []).append((slug, info))
+        lines = ["📦 *Available MCPs* — install with `/mcp install <name>`\n"]
+        for cat, entries in cats.items():
+            lines.append(f"*{cat}:*")
+            for slug, info in entries:
+                env_req = [e["name"] for e in info["env"] if e.get("required")]
+                env_hint = f" _(needs: {', '.join(env_req)})_" if env_req else " _(no auth)_"
+                lines.append(f"  • `{slug}` — {info['description']}{env_hint}")
+        lines.append("\nUse `/mcp info <name>` to see setup details.")
+        # Split if too long
+        full = "\n".join(lines)
+        for i in range(0, len(full), 4000):
+            await update.message.reply_text(full[i:i+4000], parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # ── info <name> — show env vars and hints for one MCP ─────────────────────
+    if sub == "info":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: `/mcp info <name>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        slug = args[1].lower()
+        info = _MCP_CATALOG.get(slug)
+        if not info:
+            await update.message.reply_text(f"❌ `{slug}` not in catalog. Use `/mcp available` to browse.", parse_mode=ParseMode.MARKDOWN)
+            return
+        lines = [f"📦 *{slug}*", f"`{info['package']}`", f"_{info['description']}_\n"]
+        if info["env"]:
+            lines.append("*Required environment variables:*")
+            for e in info["env"]:
+                req = "required" if e.get("required") else "optional"
+                lines.append(f"• `{e['name']}` _({req})_")
+                lines.append(f"  {e['hint']}")
+        else:
+            lines.append("✅ No API keys required.")
+        lines.append(f"\nInstall: `/mcp install {slug}`")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # ── install <name> ────────────────────────────────────────────────────────
+    if sub == "install":
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Usage: `/mcp install <name>`\n\nBrowse available MCPs with `/mcp available`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        short_name = args[1].lower()
+        if short_name not in _MCP_CATALOG:
+            await update.message.reply_text(
+                f"❌ `{short_name}` is not in the catalog.\n\nUse `/mcp available` to see all options.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        info = _MCP_CATALOG[short_name]
+        _clear_flows(ctx)
+        ctx.user_data["mcp_draft"] = {
+            "short_name": short_name,
+            "package":    info["package"],
+            "env":        {},
+            "env_defs":   info["env"],   # env var definitions from catalog
+        }
+
+        required_vars = [e for e in info["env"] if e.get("required")]
+        if required_vars:
+            # Show exactly what's needed before asking
+            lines = [
+                f"📦 *{short_name}* — {info['description']}\n",
+                "*This MCP needs the following environment variables:*\n",
+            ]
+            for e in info["env"]:
+                req = "required" if e.get("required") else "optional"
+                lines.append(f"• `{e['name']}` _({req})_")
+                lines.append(f"  _{e['hint']}_\n")
+            lines.append("Do you have these credentials? Reply `yes` to enter them, `no` to cancel, or `skip` to install without them (it may not work).")
+            ctx.user_data["mcp_step"] = "env_choice"
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        else:
+            # No env vars needed — go straight to install
+            ctx.user_data["mcp_step"] = "installing"
+            await _do_mcp_install(update, ctx)
+        return
+
+    # ── list (default) — installed MCPs ───────────────────────────────────────
+    try:
+        r = requests.get(f"{AGENT_URL}/mcps", timeout=10)
+        data = r.json()
+        mcps = data.get("mcps", [])
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error fetching MCPs: {e}")
+        return
+
+    if not mcps:
+        await update.message.reply_text(
+            "🔧 *No MCPs installed.*\n\n"
+            "• `/mcp available` — browse all available MCPs\n"
+            "• `/mcp install <name>` — install one\n"
+            "• `/mcp info <name>` — see env vars and setup details",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    lines = ["🔧 *Installed MCPs:*\n"]
+    for mcp in mcps:
+        tool_count = len(mcp.get("tools", []))
+        lines.append(f"• `{mcp['name']}` — {tool_count} tool(s)")
+    lines.append("\n*Commands:*")
+    lines.append("• `/mcp available` — browse catalog")
+    lines.append("• `/mcp info <name>` — setup details + env vars")
+    lines.append("• `/mcp install <name>` — install")
+    lines.append("• `/mcp tools <name>` — list tools")
+    lines.append("• `/mcp remove <name>` — uninstall")
+    lines.append("• `/mcp reload` — sync tools to agent")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_mcp_install_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle one step of the MCP install flow. Returns True if consumed."""
+    step  = ctx.user_data.get("mcp_step")
+    draft = ctx.user_data.get("mcp_draft", {})
+    text  = update.message.text.strip()
+
+    if not step:
+        return False
+
+    # ── env choice ────────────────────────────────────────────────────────────
+    if step == "env_choice":
+        choice = text.lower()
+        if choice == "yes":
+            ctx.user_data["mcp_step"] = "env_vars"
+            env_defs = draft.get("env_defs", [])
+            lines = ["Enter environment variables, one per line as `KEY=VALUE`\n"]
+            for e in env_defs:
+                req = "required" if e.get("required") else "optional"
+                lines.append(f"• `{e['name']}` _({req})_ — {e['hint']}")
+            lines.append("\nType `done` when finished.")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        elif choice in ("no", "skip"):
+            ctx.user_data["mcp_step"] = "installing"
+            await _do_mcp_install(update, ctx)
+        else:
+            await update.message.reply_text("Please reply `yes`, `no`, or `skip`.", parse_mode=ParseMode.MARKDOWN)
+        return True
+
+    # ── env vars collection ────────────────────────────────────────────────────
+    if step == "env_vars":
+        if text.lower() == "done":
+            # Warn if required vars are missing
+            env      = draft.get("env", {})
+            env_defs = draft.get("env_defs", [])
+            missing  = [e["name"] for e in env_defs if e.get("required") and e["name"] not in env]
+            if missing:
+                await update.message.reply_text(
+                    f"⚠️ Still missing required variables: {', '.join(f'`{m}`' for m in missing)}\n"
+                    "Add them or type `done` again to install anyway.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                draft["_missing_warned"] = True
+                ctx.user_data["mcp_draft"] = draft
+            else:
+                ctx.user_data["mcp_step"] = "installing"
+                await _do_mcp_install(update, ctx)
+        else:
+            env = draft.get("env", {})
+            for line in text.splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    env[k.strip()] = v.strip()
+            draft["env"] = env
+            ctx.user_data["mcp_draft"] = draft
+            # If warned about missing and user sends more vars, clear warning
+            draft.pop("_missing_warned", None)
+            env_defs = draft.get("env_defs", [])
+            missing  = [e["name"] for e in env_defs if e.get("required") and e["name"] not in env]
+            saved_names = ", ".join(f"`{k}`" for k in env)
+            if missing:
+                await update.message.reply_text(
+                    f"✅ Saved: {saved_names}\nStill needed: {', '.join(f'`{m}`' for m in missing)}\nType `done` when finished.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ All variables set: {saved_names}\nType `done` to install.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+        return True
+
+    return False
+
+
+async def _do_mcp_install(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Call the agent's MCP install endpoint and report results."""
+    draft = ctx.user_data.get("mcp_draft", {})
+    package    = draft.get("package", "")
+    short_name = draft.get("short_name", "")
+    env        = draft.get("env", {})
+
+    status_msg = await update.message.reply_text(f"⏳ Installing `{package}`… this may take a minute.", parse_mode=ParseMode.MARKDOWN)
+    try:
+        r = requests.post(
+            f"{AGENT_URL}/mcps/install",
+            json={"package": package, "name": short_name, "env": env},
+            timeout=120,
+        )
+        data = r.json()
+        _clear_flows(ctx)
+        if "error" in data:
+            await status_msg.edit_text(f"❌ Install failed:\n{data['error']}")
+            return
+        tools = data.get("tools", [])
+        tools_text = "\n".join(f"• `{t['name']}` — {t.get('description','')[:60]}" for t in tools) if tools else "_(none discovered)_"
+        await status_msg.edit_text(
+            f"✅ `{package}` installed!\n\n"
+            f"Tools discovered:\n{tools_text}\n\n"
+            "Use `/mcp reload` to make them available to the agent.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:
+        _clear_flows(ctx)
+        await status_msg.edit_text(f"❌ Install error: {e}")
 
 
 # ─── Agent streaming helper ───────────────────────────────────────────────────
 
 async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_text: str):
     """Stream task_text to the agent and send the result back to the user."""
-    manual_model = ctx.user_data.get("model")   # set by /model command
+    manual_model = ctx.user_data.get("model")
     history      = ctx.user_data.get("history", [])
 
     if manual_model:
@@ -420,8 +1219,8 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
 
     loop.run_in_executor(None, stream_from_agent)
 
-    result    = "(no result)"
-    elapsed   = 0
+    result     = "(no result)"
+    elapsed    = 0
     model_used = model
     steps: list[str] = []
 
@@ -450,8 +1249,8 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
             except Exception:
                 pass
         elif etype == "result":
-            result    = event.get("text", "(no result)")
-            elapsed   = event.get("elapsed", 0)
+            result     = event.get("text", "(no result)")
+            elapsed    = event.get("elapsed", 0)
             model_used = event.get("model", model)
 
     history = ctx.user_data.get("history", [])
@@ -484,6 +1283,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         await update.message.reply_text("⛔ Unauthorized.")
         return
+
+    # Route to active multi-step flows before hitting the agent
+    if await handle_skill_delete_confirm(update, ctx):
+        return
+    if await handle_skill_create_step(update, ctx):
+        return
+    if await handle_mcp_install_step(update, ctx):
+        return
+
     user_text = update.message.text.strip()
     if not user_text:
         return
@@ -505,15 +1313,13 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     voice = update.message.voice
     status_msg = await update.message.reply_text("🎙️ Transcribing voice message…")
 
-    # Download voice bytes from Telegram
     try:
-        tg_file    = await voice.get_file()
+        tg_file     = await voice.get_file()
         audio_bytes = bytes(await tg_file.download_as_bytearray())
     except Exception as e:
         await status_msg.edit_text(f"❌ Failed to download voice message: {e}")
         return
 
-    # Send to agent /transcribe endpoint
     try:
         r = requests.post(
             f"{AGENT_URL}/transcribe",
@@ -534,7 +1340,6 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text("❌ Could not transcribe audio (empty result).")
         return
 
-    # Show the user what was heard, then proceed as a normal task
     await status_msg.edit_text(
         f"🎙️ *Heard:* _{transcript}_",
         parse_mode=ParseMode.MARKDOWN,
@@ -550,14 +1355,14 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Unauthorized.")
         return
 
-    photo   = update.message.photo[-1]  # Largest available size
+    photo   = update.message.photo[-1]
     caption = (update.message.caption or "").strip()
 
     status_msg = await update.message.reply_text("📤 Uploading to WordPress media library…")
 
-    tg_file    = await photo.get_file()
+    tg_file     = await photo.get_file()
     photo_bytes = bytes(await tg_file.download_as_bytearray())
-    filename   = f"telegram_{photo.file_id}.jpg"
+    filename    = f"telegram_{photo.file_id}.jpg"
 
     try:
         r = requests.post(
@@ -586,7 +1391,6 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Caption present → let the agent act on it
     await status_msg.delete()
     task_text = (
         f"A photo was just uploaded to the WordPress media library "
@@ -598,12 +1402,26 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+async def post_init(app: Application) -> None:
+    await app.bot.set_my_commands([
+        BotCommand("start",  "Welcome message & feature list"),
+        BotCommand("status", "Check agent health"),
+        BotCommand("model",  "Show or switch AI model"),
+        BotCommand("cancel", "Clear history / cancel active flow"),
+        BotCommand("tasks",  "List or cancel scheduled tasks"),
+        BotCommand("skill",  "List, create, delete, reload custom skills"),
+        BotCommand("mcp",    "Install, list, remove MCP tool servers"),
+    ])
+    logger.info("Bot commands registered with Telegram.")
+
+
 def main():
     logger.info(f"Starting bot (admin users: {ADMIN_USER_IDS})")
 
     app = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
         .build()
     )
 
@@ -613,6 +1431,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("tasks",  cmd_tasks))
     app.add_handler(CommandHandler("skill",  cmd_skill))
+    app.add_handler(CommandHandler("mcp",    cmd_mcp))
 
     app.add_handler(MessageHandler(filters.TEXT  & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))

@@ -357,6 +357,7 @@ fi
 
 LITELLM_MASTER_KEY="sk-$(openssl rand -hex 24)"
 BRIDGE_SECRET="$(openssl rand -hex 32)"
+MCP_ENV_SECRET="$(openssl rand -hex 32)"
 
 echo
 ok "Configuration collected."
@@ -611,6 +612,7 @@ WP_ADMIN_PASSWORD=${WP_ADMIN_PASSWORD}
 WP_APP_PASSWORD=${WP_APP_PASSWORD}
 WP_PATH=${WP_PATH}
 BRIDGE_SECRET=${BRIDGE_SECRET}
+MCP_ENV_SECRET=${MCP_ENV_SECRET}
 EOF
     chmod 600 .env
 }

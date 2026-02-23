@@ -380,10 +380,55 @@ def load_custom_skills() -> list[dict]:
 # Cached list of custom skill tool defs — refreshed by POST /reload-skills
 _cached_custom_tools: list[dict] = []
 
+# ─── MCP tool loader ──────────────────────────────────────────────────────────
+
+MCP_RUNNER_URL = "http://openclaw-mcp-runner:9000"
+
+
+def load_mcp_tools() -> list[dict]:
+    """
+    Fetch installed MCPs from the mcp-runner container and convert their tool
+    schemas to OpenAI-compatible function definitions.
+    Tool names are prefixed: mcp_<mcp-name>__<tool-name>
+    Returns an empty list (never raises) so a missing runner doesn't block startup.
+    """
+    try:
+        r = requests.get(f"{MCP_RUNNER_URL}/mcps", timeout=5)
+        r.raise_for_status()
+        mcps = r.json().get("mcps", [])
+    except Exception as e:
+        app.logger.warning(f"MCP runner unreachable, skipping MCP tools: {e}")
+        return []
+
+    tools = []
+    for mcp in mcps:
+        mcp_name = mcp.get("name", "")
+        for tool in mcp.get("tools", []):
+            t_name = tool.get("name", "")
+            if not mcp_name or not t_name:
+                continue
+            fn_name = f"mcp_{mcp_name}__{t_name}".replace("-", "_")
+            schema  = tool.get("inputSchema", {"type": "object", "properties": {}})
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name":        fn_name,
+                    "description": f"[MCP: {mcp_name}] {tool.get('description', '')}",
+                    "parameters":  schema,
+                },
+            })
+    if tools:
+        app.logger.info(f"Loaded {len(tools)} MCP tool(s) from {len(mcps)} MCP(s)")
+    return tools
+
+
+# Cached MCP tool defs — refreshed by POST /reload-mcps
+_cached_mcp_tools: list[dict] = []
+
 
 def _get_all_tools() -> list[dict]:
-    """Return built-in tools + any currently loaded custom skills."""
-    return TOOLS + _cached_custom_tools
+    """Return built-in tools + custom skills + MCP tools."""
+    return TOOLS + _cached_custom_tools + _cached_mcp_tools
 
 
 # ─── Tool implementations ─────────────────────────────────────────────────────
@@ -588,6 +633,47 @@ def dispatch_skill(tool_name: str, args: dict) -> str:
     return f"ERROR: Unknown skill type '{skill_type}' in {raw_name}.yaml"
 
 
+def dispatch_mcp_tool(tool_name: str, args: dict) -> str:
+    """
+    Route an mcp_<name>__<tool> call to the MCP runner container.
+    tool_name format: mcp_<mcp-name>__<tool-name>  (hyphens replaced with underscores)
+    """
+    args = {k: v for k, v in args.items() if k != "reason"}
+    # Strip leading mcp_ then split on double underscore
+    without_prefix = tool_name[len("mcp_"):]
+    parts = without_prefix.split("__", 1)
+    if len(parts) < 2:
+        return f"ERROR: Malformed MCP tool name '{tool_name}'"
+
+    mcp_name_u, fn_name = parts
+    # Reverse the hyphen→underscore substitution for the MCP name
+    # (match against installed manifests by trying both forms)
+    mcp_name = mcp_name_u.replace("_", "-")
+
+    try:
+        r = requests.post(
+            f"{MCP_RUNNER_URL}/mcps/{mcp_name}/call",
+            json={"tool": fn_name, "arguments": args},
+            timeout=60,
+        )
+        if r.status_code == 404:
+            # Try with underscores (some MCPs may have underscores in name)
+            r2 = requests.post(
+                f"{MCP_RUNNER_URL}/mcps/{mcp_name_u}/call",
+                json={"tool": fn_name, "arguments": args},
+                timeout=60,
+            )
+            if r2.status_code == 404:
+                return f"ERROR: MCP '{mcp_name}' not found. Install it with /mcp install."
+            r = r2
+        data = r.json()
+        if "error" in data:
+            return f"ERROR from MCP {mcp_name}: {data['error']}"
+        return str(data.get("result", "(no result)"))
+    except Exception as e:
+        return f"ERROR calling MCP tool {tool_name}: {e}"
+
+
 def _upload_media_to_wp(file_bytes: bytes, filename: str, mime_type: str) -> dict:
     """Upload raw bytes to the WordPress media library."""
     import uuid
@@ -690,6 +776,8 @@ def dispatch_tool(name: str, args: dict) -> str:
         )
     elif name.startswith("skill_"):
         return dispatch_skill(name, args)
+    elif name.startswith("mcp_"):
+        return dispatch_mcp_tool(name, args)
     else:
         return f"ERROR: Unknown tool '{name}'"
 
@@ -884,6 +972,7 @@ def health():
         "scheduler": "running" if scheduler.running else "stopped",
         "scheduled_jobs": len(scheduler.get_jobs()),
         "custom_skills": len(_cached_custom_tools),
+        "mcp_tools": len(_cached_mcp_tools),
         "whisper": "available" if _whisper_client else "unavailable (set OPENAI_API_KEY)",
     })
 
@@ -1020,11 +1109,212 @@ def reload_skills():
     })
 
 
+# ─── Skill CRUD helpers ────────────────────────────────────────────────────────
+
+_BUILTIN_TOOL_NAMES = {"run_command", "wp_rest", "wp_cli_remote", "schedule_task"}
+_FORBIDDEN_SKILL_COMMANDS = [
+    "wp db drop", "wp db reset", "wp site empty",
+    "wp eval", "wp eval-file", "wp shell",
+    "rm -rf /", "mkfs", "dd if=",
+    "> /dev/sda", "chmod 777 /",
+]
+
+
+def validate_skill_yaml(raw: str) -> "dict | str":
+    """
+    Parse and validate a skill YAML string.
+    Returns the parsed dict on success, or an error string on failure.
+    """
+    try:
+        skill = yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        return f"Invalid YAML: {e}"
+
+    if not skill or not isinstance(skill, dict):
+        return "YAML must be a mapping (key: value) at the top level."
+
+    name = skill.get("name", "").strip()
+    if not name:
+        return "Missing required field: name"
+    if not re.match(r"^[a-zA-Z0-9_]+$", name):
+        return "Skill name must contain only letters, numbers, and underscores."
+    if name in _BUILTIN_TOOL_NAMES:
+        return f"Name '{name}' conflicts with a built-in tool. Choose a different name."
+
+    skill_type = skill.get("type", "").strip()
+    if skill_type not in ("command", "http", "webhook"):
+        return "Field 'type' must be one of: command, http, webhook"
+
+    if skill_type == "command":
+        cmd = skill.get("command", "").strip()
+        if not cmd:
+            return "Field 'command' is required for type: command"
+        cmd_lower = cmd.lower()
+        for forbidden in _FORBIDDEN_SKILL_COMMANDS:
+            if forbidden in cmd_lower:
+                return f"Command contains blocked operation: '{forbidden}'"
+
+    if skill_type in ("http", "webhook"):
+        if not skill.get("url", "").strip():
+            return "Field 'url' is required for type: http/webhook"
+
+    return skill
+
+
+@app.get("/skills/<name>")
+def get_skill(name: str):
+    """Return the raw YAML for a single skill by name."""
+    if not re.match(r"^[a-zA-Z0-9_]+$", name):
+        return jsonify({"error": "Invalid skill name"}), 400
+    if not SKILLS_DIR.exists():
+        return jsonify({"error": "Skills directory not found"}), 404
+    for skill_file in SKILLS_DIR.glob("*.yaml"):
+        try:
+            skill = yaml.safe_load(skill_file.read_text())
+            if skill and skill.get("name") == name:
+                return jsonify({"name": name, "yaml": skill_file.read_text()})
+        except Exception:
+            continue
+    return jsonify({"error": f"Skill '{name}' not found"}), 404
+
+
+@app.post("/skills")
+def create_skill():
+    """Create or replace a custom skill from a YAML string."""
+    global _cached_custom_tools
+    body = request.get_json(silent=True) or {}
+    raw = body.get("yaml", "").strip()
+    if not raw:
+        return jsonify({"error": "Request body must include 'yaml' field"}), 400
+
+    result = validate_skill_yaml(raw)
+    if isinstance(result, str):
+        return jsonify({"error": result}), 400
+
+    skill = result
+    name = skill["name"]
+
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    skill_path = SKILLS_DIR / f"{name}.yaml"
+    skill_path.write_text(raw)
+
+    _cached_custom_tools = load_custom_skills()
+    app.logger.info(f"Skill created/updated: {name}")
+    return jsonify({
+        "status":    "created",
+        "name":      name,
+        "tool_name": f"skill_{name}",
+        "file":      skill_path.name,
+    })
+
+
+@app.delete("/skills/<name>")
+def delete_skill(name: str):
+    """Delete a custom skill by name."""
+    global _cached_custom_tools
+    if not re.match(r"^[a-zA-Z0-9_]+$", name):
+        return jsonify({"error": "Invalid skill name"}), 400
+    if not SKILLS_DIR.exists():
+        return jsonify({"error": "Skills directory not found"}), 404
+
+    found = None
+    for skill_file in SKILLS_DIR.glob("*.yaml"):
+        try:
+            skill = yaml.safe_load(skill_file.read_text())
+            if skill and skill.get("name") == name:
+                found = skill_file
+                break
+        except Exception:
+            continue
+
+    if not found:
+        return jsonify({"error": f"Skill '{name}' not found"}), 404
+
+    found.unlink()
+    _cached_custom_tools = load_custom_skills()
+    app.logger.info(f"Skill deleted: {name}")
+    return jsonify({"status": "deleted", "name": name})
+
+
+# ─── MCP proxy endpoints ──────────────────────────────────────────────────────
+# The agent proxies MCP management calls to the mcp-runner container so the bot
+# only needs to know about the agent's URL.
+
+def _mcp_proxy(method: str, path: str, **kwargs):
+    """Forward a request to the MCP runner. Raises on connection error."""
+    url = f"{MCP_RUNNER_URL}{path}"
+    return requests.request(method, url, timeout=kwargs.pop("timeout", 120), **kwargs)
+
+
+@app.get("/mcps")
+def list_mcps():
+    try:
+        r = _mcp_proxy("GET", "/mcps", timeout=10)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"error": f"MCP runner unreachable: {e}"}), 503
+
+
+@app.post("/mcps/install")
+def install_mcp():
+    body = request.get_json(silent=True) or {}
+    try:
+        r = _mcp_proxy("POST", "/mcps/install", json=body, timeout=120)
+        data = r.json()
+        if r.status_code == 200 and "error" not in data:
+            # Auto-reload MCP tools after successful install
+            global _cached_mcp_tools
+            _cached_mcp_tools = load_mcp_tools()
+        return jsonify(data), r.status_code
+    except Exception as e:
+        return jsonify({"error": f"MCP runner unreachable: {e}"}), 503
+
+
+@app.delete("/mcps/<name>")
+def remove_mcp(name: str):
+    try:
+        r = _mcp_proxy("DELETE", f"/mcps/{name}", timeout=15)
+        data = r.json()
+        if r.status_code == 200:
+            global _cached_mcp_tools
+            _cached_mcp_tools = load_mcp_tools()
+        return jsonify(data), r.status_code
+    except Exception as e:
+        return jsonify({"error": f"MCP runner unreachable: {e}"}), 503
+
+
+@app.get("/mcps/<name>/tools")
+def list_mcp_tools_endpoint(name: str):
+    try:
+        r = _mcp_proxy("GET", f"/mcps/{name}/tools", timeout=10)
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({"error": f"MCP runner unreachable: {e}"}), 503
+
+
+@app.post("/reload-mcps")
+def reload_mcps():
+    """Hot-reload MCP tool definitions from the runner without restarting."""
+    global _cached_mcp_tools
+    old_count = len(_cached_mcp_tools)
+    _cached_mcp_tools = load_mcp_tools()
+    new_count = len(_cached_mcp_tools)
+    return jsonify({
+        "loaded":   new_count,
+        "previous": old_count,
+        "tools":    [t["function"]["name"] for t in _cached_mcp_tools],
+    })
+
+
 # ─── Startup ──────────────────────────────────────────────────────────────────
 
 # Load custom skills at import time (gunicorn imports this module once per worker)
 _cached_custom_tools = load_custom_skills()
 app.logger.info(f"Custom skills loaded: {len(_cached_custom_tools)}")
+
+# Load MCP tools (graceful — returns [] if runner not yet healthy)
+_cached_mcp_tools = load_mcp_tools()
+app.logger.info(f"MCP tools loaded: {len(_cached_mcp_tools)}")
 
 # Start background scheduler (persists jobs in SQLite across restarts)
 scheduler.start()

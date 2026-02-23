@@ -89,7 +89,7 @@ services:
       # For any tool that downloads from the internet (plugins, images)
       HTTPS_PROXY: "http://openclaw-squid:3128"
       HTTP_PROXY: "http://openclaw-squid:3128"
-      NO_PROXY: "openclaw-litellm,openclaw-squid,openclaw-bot,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
+      NO_PROXY: "openclaw-litellm,openclaw-squid,openclaw-bot,openclaw-mcp-runner,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
       PYTHONUNBUFFERED: "1"
       SKILL_FILE: "/app/SKILL.md"
       WP_PATH: "/wordpress"
@@ -106,7 +106,7 @@ services:
       # WordPress files (if on same server). Remote-only mode: set WP_PATH="" in .env
       - ${WP_PATH:-/var/www/html}:/wordpress:rw
       - ./SKILL.md:/app/SKILL.md:ro
-      - ./openclaw-config:/app/config:ro
+      - ./openclaw-config:/app/config:rw
       - agent-tmp:/tmp/wp-agent
       # Persistent data for APScheduler's SQLite job store.
       # Scheduled tasks survive container restarts because of this volume.
@@ -123,6 +123,45 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  # ── MCP Runner ────────────────────────────────────────────────────────────
+  # Sandboxed Node.js container that installs and runs MCP servers on-demand.
+  # SECURITY: named volume only (no host bind mounts), cap_drop ALL, read-only
+  # root FS, all outbound through Squid. Only whitelisted npm packages allowed.
+  openclaw-mcp-runner:
+    build:
+      context: ./mcp-runner
+      dockerfile: Dockerfile
+    container_name: openclaw-mcp-runner
+    restart: unless-stopped
+    environment:
+      # All npm/MCP outbound traffic routed through Squid
+      HTTPS_PROXY: "http://openclaw-squid:3128"
+      HTTP_PROXY: "http://openclaw-squid:3128"
+      NO_PROXY: "openclaw-agent,openclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
+      MCP_ENV_SECRET: "${MCP_ENV_SECRET:-}"
+    volumes:
+      # Named volume only — NO host bind mount (security boundary)
+      - mcp-data:/mcps
+    mem_limit: 512m
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      agent-internal: {}
+    depends_on:
+      openclaw-squid:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   # ── Telegram Bot ──────────────────────────────────────────────────────────
   # User interface. Relays Telegram messages to the agent.
@@ -152,6 +191,8 @@ volumes:
   agent-tmp:
   # Scheduler SQLite database — persists scheduled jobs across restarts
   agent-data:
+  # MCP packages and manifests — isolated named volume, not exposed to host
+  mcp-data:
 
 networks:
   # All agent/bot containers live here. internal:true = NO internet routing.
