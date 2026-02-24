@@ -1,0 +1,33 @@
+{
+  "name": "openclaw-agent",
+  "version": "1.0.0",
+  "description": "WordPress AI Agent — TypeScript",
+  "scripts": {
+    "start": "tsx agent.ts"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.18.2",
+    "https-proxy-agent": "^7.0.5",
+    "js-yaml": "^4.1.0",
+    "multer": "^1.4.5-lts.1",
+    "node-schedule": "^2.1.1",
+    "openai": "^4.67.0",
+    "proxy-from-env": "^1.1.0",
+    "tsx": "^4.16.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^4.17.21",
+    "@types/js-yaml": "^4.0.9",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.14.0",
+    "@types/node-schedule": "^2.1.7",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "openclaw-bot",
+  "version": "1.0.0",
+  "description": "Telegram Bot for WordPress Agent — TypeScript",
+  "scripts": {
+    "start": "tsx bot.ts"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "form-data": "^4.0.0",
+    "grammy": "^1.28.0",
+    "https-proxy-agent": "^7.0.5",
+    "js-yaml": "^4.1.0",
+    "tsx": "^4.16.0",
+    "undici": "^6.19.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
