@@ -8,16 +8,15 @@
  */
 
 import { Bot, Context, session, SessionFlavor } from "grammy";
-import { setGlobalDispatcher, ProxyAgent } from "undici";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import axios from "axios";
 import FormData from "form-data";
 import * as yaml from "js-yaml";
 
-// ─── Proxy setup — all Telegram API calls go through Squid ────────────────────
+// ─── Proxy setup ───────────────────────────────────────────────────────────────
+// grammY uses node-fetch internally, which requires an http.Agent — not undici's
+// setGlobalDispatcher. Pass HttpsProxyAgent directly to the Bot constructor.
 const HTTPS_PROXY = process.env.HTTPS_PROXY ?? "";
-if (HTTPS_PROXY) {
-  setGlobalDispatcher(new ProxyAgent(HTTPS_PROXY));
-}
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -332,7 +331,11 @@ const agentAxios = axios.create({ proxy: false });
 
 // ─── Bot setup ────────────────────────────────────────────────────────────────
 
-const bot = new Bot<MyContext>(TELEGRAM_BOT_TOKEN);
+const bot = new Bot<MyContext>(TELEGRAM_BOT_TOKEN, {
+  client: HTTPS_PROXY
+    ? { baseFetchConfig: { agent: new HttpsProxyAgent(HTTPS_PROXY) } }
+    : {},
+});
 
 bot.use(session({ initial: (): SessionData => ({}) }));
 
