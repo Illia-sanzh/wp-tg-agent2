@@ -1,27 +1,17 @@
-/**
- * Telegram Bot — WordPress Agent Interface (TypeScript)
- * ──────────────────────────────────────────────────────
- * Receives messages from the authorized user and forwards them to the
- * WordPress AI agent. Streams back the result.
- *
- * Framework: grammY (https://grammy.dev)
- */
-
 import { Bot, Context, session, SessionFlavor } from "grammy";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import axios from "axios";
 import FormData from "form-data";
 import * as yaml from "js-yaml";
 
-// ─── Proxy setup ───────────────────────────────────────────────────────────────
-// grammY uses node-fetch internally, which requires an http.Agent — not undici's
-// setGlobalDispatcher. Pass HttpsProxyAgent directly to the Bot constructor.
 const HTTPS_PROXY = process.env.HTTPS_PROXY ?? "";
-
-// ─── Config ───────────────────────────────────────────────────────────────────
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is required");
+
+function sanitize(text: string): string {
+  return text.replaceAll(TELEGRAM_BOT_TOKEN, "[REDACTED]");
+}
 
 const ADMIN_USER_IDS = new Set<number>(
   (process.env.TELEGRAM_ADMIN_USER_ID ?? "")
@@ -38,8 +28,6 @@ const AUTO_ROUTING  = (process.env.AUTO_ROUTING ?? "false").toLowerCase() === "t
 const FAST_MODEL    = process.env.FAST_MODEL    ?? "claude-haiku-4-5";
 const SMART_MODEL   = process.env.SMART_MODEL   ?? DEFAULT_MODEL;
 
-// ─── Session types ────────────────────────────────────────────────────────────
-
 interface ChatMessage { role: string; content: string; }
 
 interface SessionData {
@@ -53,8 +41,6 @@ interface SessionData {
 }
 
 type MyContext = Context & SessionFlavor<SessionData>;
-
-// ─── Known models ─────────────────────────────────────────────────────────────
 
 const KNOWN_MODELS = new Set([
   "auto",
@@ -74,14 +60,11 @@ function isValidModel(name: string): boolean {
   return KNOWN_MODELS.has(name) || name.startsWith("openrouter/");
 }
 
-// ─── MCP Catalog ──────────────────────────────────────────────────────────────
-
 interface EnvDef { name: string; hint: string; required: boolean; }
 interface McpEntry { package: string; description: string; category: string; env: EnvDef[]; }
 
 const MCP_CATALOG: Record<string, McpEntry> = {
 
-  // ── Utility / No auth ─────────────────────────────────────────────────────
   "server-fetch": {
     package: "@modelcontextprotocol/server-fetch",
     description: "Fetch any URL and convert to clean markdown",
@@ -119,7 +102,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     env: [],
   },
 
-  // ── Databases ─────────────────────────────────────────────────────────────
   "server-postgres": {
     package: "@modelcontextprotocol/server-postgres",
     description: "Query and inspect PostgreSQL databases",
@@ -160,7 +142,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Search ────────────────────────────────────────────────────────────────
   "brave-search": {
     package: "@brave/brave-search-mcp-server",
     description: "Web, news, image and video search via Brave Search API",
@@ -202,7 +183,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Developer tools ───────────────────────────────────────────────────────
   "server-github": {
     package: "@modelcontextprotocol/server-github",
     description: "GitHub repos, issues, PRs, file search, code review",
@@ -238,7 +218,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Productivity ──────────────────────────────────────────────────────────
   "notion": {
     package: "@notionhq/notion-mcp-server",
     description: "Search, read and write Notion pages and databases",
@@ -256,7 +235,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Communication ─────────────────────────────────────────────────────────
   "server-slack": {
     package: "@modelcontextprotocol/server-slack",
     description: "Read/write Slack messages, list channels, manage threads",
@@ -267,7 +245,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Payments / E-commerce ─────────────────────────────────────────────────
   "stripe": {
     package: "@stripe/mcp",
     description: "Query Stripe customers, payments, subscriptions and webhooks",
@@ -286,7 +263,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Browser / Automation ──────────────────────────────────────────────────
   "server-puppeteer": {
     package: "@modelcontextprotocol/server-puppeteer",
     description: "Browser automation — navigate, screenshot, click, fill forms",
@@ -309,7 +285,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── More Databases ─────────────────────────────────────────────────────────
   "server-redis": {
     package: "@modelcontextprotocol/server-redis",
     description: "Redis key-value store — get, set, list, delete keys",
@@ -390,7 +365,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Cloud / Storage ────────────────────────────────────────────────────────
   "server-gdrive": {
     package: "@modelcontextprotocol/server-gdrive",
     description: "Read, search and manage Google Drive files and folders",
@@ -445,7 +419,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── More Developer Tools ───────────────────────────────────────────────────
   "server-gitlab": {
     package: "@modelcontextprotocol/server-gitlab",
     description: "GitLab repos, merge requests, issues, CI pipelines",
@@ -514,7 +487,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     env: [],
   },
 
-  // ── More Search ────────────────────────────────────────────────────────────
   "perplexity": {
     package: "@perplexity-ai/mcp-server",
     description: "Perplexity AI search — real-time web search with reasoning and citations",
@@ -541,7 +513,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── More Communication ─────────────────────────────────────────────────────
   "discord": {
     package: "discord-mcp-server",
     description: "Discord messaging — send/read messages, manage channels and servers",
@@ -585,7 +556,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── More Productivity ──────────────────────────────────────────────────────
   "hubspot": {
     package: "@hubspot/mcp-server",
     description: "HubSpot CRM — contacts, deals, tickets, companies and pipelines",
@@ -658,7 +628,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── CMS ────────────────────────────────────────────────────────────────────
   "wordpress-mcp": {
     package: "wordpress-mcp",
     description: "WordPress REST API — posts, pages, media, users, plugins",
@@ -688,7 +657,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Google Workspace ───────────────────────────────────────────────────────
   "google-calendar": {
     package: "@cocal/google-calendar-mcp",
     description: "Google Calendar — events, scheduling, free/busy, multi-calendar",
@@ -714,7 +682,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── AI / ML ────────────────────────────────────────────────────────────────
   "replicate": {
     package: "replicate-mcp",
     description: "Run AI models on Replicate — image generation, audio, video, LLMs",
@@ -724,7 +691,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Media ──────────────────────────────────────────────────────────────────
   "youtube-transcript": {
     package: "@kimtaeyoon83/mcp-server-youtube-transcript",
     description: "Fetch YouTube video transcripts/subtitles by URL or video ID",
@@ -741,7 +707,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 
-  // ── Sales / CRM ────────────────────────────────────────────────────────────
   "salesforce": {
     package: "@advanced-communities/salesforce-mcp-server",
     description: "Salesforce CRM via Salesforce CLI — objects, queries, metadata",
@@ -752,9 +717,6 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
 };
-
-// ─── Smart model routing ──────────────────────────────────────────────────────
-
 const FAST_KEYWORDS  = new Set(["show","list","get","fetch","find","check","count","display","status","health","ping","version","info","which","who","what is","what are","how many","is there","are there"]);
 const SMART_KEYWORDS = new Set(["analyze","analyse","audit","debug","diagnose","investigate","optimize","optimise","review","evaluate","compare","migrate","migration","restructure","refactor","comprehensive","thorough","complete","detailed","full report","performance","security","vulnerability","why is","why does","figure out","root cause","step by step"]);
 
@@ -770,9 +732,6 @@ function autoSelectModel(message: string): [string, string] {
   if (n <= 5)                                        return [FAST_MODEL, "fast"];
   return [DEFAULT_MODEL, "standard"];
 }
-
-// ─── Flow state helpers ────────────────────────────────────────────────────────
-
 function clearFlows(ctx: MyContext): void {
   delete ctx.session.skillDraft;
   delete ctx.session.skillStep;
@@ -784,19 +743,10 @@ function clearFlows(ctx: MyContext): void {
 function inFlow(ctx: MyContext): boolean {
   return !!(ctx.session.skillStep || ctx.session.pendingSkillDelete || ctx.session.mcpStep);
 }
-
-// ─── Auth helper ──────────────────────────────────────────────────────────────
-
 function isAdmin(ctx: MyContext): boolean {
   return ADMIN_USER_IDS.has(ctx.from?.id ?? 0);
 }
-
-// ─── Axios helper (no proxy for internal calls) ───────────────────────────────
-
 const agentAxios = axios.create({ proxy: false });
-
-// ─── Bot setup ────────────────────────────────────────────────────────────────
-
 const bot = new Bot<MyContext>(TELEGRAM_BOT_TOKEN, {
   client: HTTPS_PROXY
     ? { baseFetchConfig: { agent: new HttpsProxyAgent(HTTPS_PROXY) } }
@@ -804,9 +754,6 @@ const bot = new Bot<MyContext>(TELEGRAM_BOT_TOKEN, {
 });
 
 bot.use(session({ initial: (): SessionData => ({}) }));
-
-// ─── /start ───────────────────────────────────────────────────────────────────
-
 bot.command("start", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
   await ctx.reply(
@@ -828,9 +775,6 @@ bot.command("start", async ctx => {
     { parse_mode: "MarkdownV2" },
   );
 });
-
-// ─── /status ──────────────────────────────────────────────────────────────────
-
 bot.command("status", async ctx => {
   if (!isAdmin(ctx)) return;
   try {
@@ -848,12 +792,9 @@ bot.command("status", async ctx => {
       { parse_mode: "Markdown" },
     );
   } catch (e) {
-    await ctx.reply(`❌ Agent unreachable: ${e}`);
+    await ctx.reply(`❌ Agent unreachable: ${sanitize(String(e))}`);
   }
 });
-
-// ─── /model ───────────────────────────────────────────────────────────────────
-
 bot.command("model", async ctx => {
   if (!isAdmin(ctx)) return;
   const args   = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
@@ -917,9 +858,6 @@ bot.command("model", async ctx => {
     await ctx.reply(`✅ Locked to model: \`${choice}\``, { parse_mode: "Markdown" });
   }
 });
-
-// ─── /cancel ──────────────────────────────────────────────────────────────────
-
 bot.command("cancel", async ctx => {
   if (!isAdmin(ctx)) return;
   const wasInFlow = inFlow(ctx);
@@ -929,9 +867,6 @@ bot.command("cancel", async ctx => {
     ? "🛑 Flow cancelled and conversation history cleared."
     : "🛑 Task cancelled and conversation history cleared.");
 });
-
-// ─── /tasks ───────────────────────────────────────────────────────────────────
-
 bot.command("tasks", async ctx => {
   if (!isAdmin(ctx)) return;
   const args = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
@@ -971,9 +906,6 @@ bot.command("tasks", async ctx => {
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   } catch (e) { await ctx.reply(`❌ Error fetching schedules: ${e}`); }
 });
-
-// ─── /skill ───────────────────────────────────────────────────────────────────
-
 bot.command("skill", async ctx => {
   if (!isAdmin(ctx)) return;
   const args = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
@@ -1032,9 +964,6 @@ bot.command("skill", async ctx => {
     );
   } catch (e) { await ctx.reply(`❌ Error fetching skills: ${e}`); }
 });
-
-// ─── Skill create multi-step flow ─────────────────────────────────────────────
-
 async function handleSkillCreateStep(ctx: MyContext): Promise<boolean> {
   const step  = ctx.session.skillStep;
   const draft = ctx.session.skillDraft ?? {};
@@ -1141,9 +1070,6 @@ async function handleSkillCreateStep(ctx: MyContext): Promise<boolean> {
 
   return false;
 }
-
-// ─── Skill delete confirm ─────────────────────────────────────────────────────
-
 async function handleSkillDeleteConfirm(ctx: MyContext): Promise<boolean> {
   const pending = ctx.session.pendingSkillDelete;
   if (!pending) return false;
@@ -1167,9 +1093,6 @@ async function handleSkillDeleteConfirm(ctx: MyContext): Promise<boolean> {
   }
   return true;
 }
-
-// ─── /mcp ─────────────────────────────────────────────────────────────────────
-
 bot.command("mcp", async ctx => {
   if (!isAdmin(ctx)) return;
   const args = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
@@ -1212,24 +1135,45 @@ bot.command("mcp", async ctx => {
   }
 
   if (sub === "available") {
+    const CATEGORY_EMOJI: Record<string, string> = {
+      Utility: "🔧", Database: "🗄", Search: "🔍", Developer: "⚙️",
+      Productivity: "📋", Communication: "💬", Payments: "💳",
+      Browser: "🌐", Cloud: "☁️", CMS: "📝", Google: "📊",
+      AI: "🤖", Media: "🎬", Sales: "📈",
+    };
     const cats: Record<string, Array<[string, McpEntry]>> = {};
     for (const [slug, info] of Object.entries(MCP_CATALOG)) {
-      if (!cats[info.category]) cats[info.category] = [];
-      cats[info.category].push([slug, info]);
+      (cats[info.category] ??= []).push([slug, info]);
     }
-    const lines = ["📦 *Available MCPs* — install with `/mcp install <name>`\n"];
+    const total = Object.keys(MCP_CATALOG).length;
+    const lines = [`📦 *Available MCPs* (${total}) — \`/mcp install <name>\`\n`];
     for (const [cat, entries] of Object.entries(cats)) {
-      lines.push(`*${cat}:*`);
+      const emoji = CATEGORY_EMOJI[cat] ?? "📦";
+      lines.push(`*${emoji} ${cat}*`);
       for (const [slug, info] of entries) {
-        const envReq  = info.env.filter(e => e.required).map(e => e.name);
-        const envHint = envReq.length ? ` _(needs: ${envReq.join(", ")})_` : " _(no auth)_";
-        lines.push(`  • \`${slug}\` — ${info.description}${envHint}`);
+        const reqVars = info.env.filter(e => e.required);
+        const req = reqVars.length
+          ? "needs " + reqVars.map(e => `\`${e.name}\``).join(", ")
+          : "no setup needed";
+        lines.push(`• \`${slug}\` — ${info.description}\n    _${req}_`);
+      }
+      lines.push("");
+    }
+    lines.push("💡 `/mcp info <name>` — full setup details & env var hints");
+
+    const chunks: string[] = [];
+    let current = "";
+    for (const line of lines) {
+      if (current.length + line.length + 1 > 4000) {
+        chunks.push(current);
+        current = line;
+      } else {
+        current += (current ? "\n" : "") + line;
       }
     }
-    lines.push("\nUse `/mcp info <name>` to see setup details.");
-    const full = lines.join("\n");
-    for (let i = 0; i < full.length; i += 4000) {
-      await ctx.reply(full.slice(i, i + 4000), { parse_mode: "Markdown" });
+    if (current) chunks.push(current);
+    for (const chunk of chunks) {
+      await ctx.reply(chunk, { parse_mode: "Markdown" });
     }
     return;
   }
@@ -1308,9 +1252,6 @@ bot.command("mcp", async ctx => {
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   } catch (e) { await ctx.reply(`❌ Error fetching MCPs: ${e}`); }
 });
-
-// ─── MCP install multi-step flow ──────────────────────────────────────────────
-
 async function handleMcpInstallStep(ctx: MyContext): Promise<boolean> {
   const step  = ctx.session.mcpStep;
   const draft = ctx.session.mcpDraft ?? {};
@@ -1411,12 +1352,9 @@ async function doMcpInstall(ctx: MyContext): Promise<void> {
     );
   } catch (e) {
     clearFlows(ctx);
-    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Install error: ${e}`);
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Install error: ${sanitize(String(e))}`);
   }
 }
-
-// ─── Agent streaming helper ───────────────────────────────────────────────────
-
 async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
   const manualModel = ctx.session.model;
   const history     = ctx.session.history ?? [];
@@ -1490,7 +1428,7 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
     } else if (e.code === "ECONNREFUSED") {
       result = "❌ Agent is unreachable.";
     } else {
-      result = `❌ Error: ${e.message}`;
+      result = `❌ Error: ${sanitize(e.message ?? String(e))}`;
     }
   }
 
@@ -1519,9 +1457,6 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
     }
   }
 }
-
-// ─── Message handler ──────────────────────────────────────────────────────────
-
 bot.on("message:text", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
 
@@ -1536,9 +1471,6 @@ bot.on("message:text", async ctx => {
   await ctx.replyWithChatAction("typing");
   await runAgentTask(ctx, userText);
 });
-
-// ─── Voice message handler ────────────────────────────────────────────────────
-
 bot.on("message:voice", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
 
@@ -1550,10 +1482,10 @@ bot.on("message:voice", async ctx => {
     const tgFile = await ctx.api.getFile(voice.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${tgFile.file_path}`;
     const resp = await axios.get(fileUrl, { responseType: "arraybuffer", proxy: false,
-      httpsAgent: HTTPS_PROXY ? new (require("https-proxy-agent").HttpsProxyAgent)(HTTPS_PROXY) : undefined });
+      httpsAgent: HTTPS_PROXY ? new HttpsProxyAgent(HTTPS_PROXY) : undefined });
     audioBytes = Buffer.from(resp.data);
   } catch (e) {
-    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Failed to download voice message: ${e}`);
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Failed to download voice message: ${sanitize(String(e))}`);
     return;
   }
 
@@ -1567,7 +1499,7 @@ bot.on("message:voice", async ctx => {
     });
     transcribeData = r.data;
   } catch (e) {
-    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Transcription request failed: ${e}`);
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Transcription request failed: ${sanitize(String(e))}`);
     return;
   }
 
@@ -1591,9 +1523,6 @@ bot.on("message:voice", async ctx => {
   await ctx.replyWithChatAction("typing");
   await runAgentTask(ctx, transcript);
 });
-
-// ─── Photo handler ────────────────────────────────────────────────────────────
-
 bot.on("message:photo", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
 
@@ -1606,10 +1535,10 @@ bot.on("message:photo", async ctx => {
     const tgFile = await ctx.api.getFile(photo.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${tgFile.file_path}`;
     const resp = await axios.get(fileUrl, { responseType: "arraybuffer", proxy: false,
-      httpsAgent: HTTPS_PROXY ? new (require("https-proxy-agent").HttpsProxyAgent)(HTTPS_PROXY) : undefined });
+      httpsAgent: HTTPS_PROXY ? new HttpsProxyAgent(HTTPS_PROXY) : undefined });
     photoBytes = Buffer.from(resp.data);
   } catch (e) {
-    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Failed to download photo: ${e}`);
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Failed to download photo: ${sanitize(String(e))}`);
     return;
   }
 
@@ -1624,7 +1553,7 @@ bot.on("message:photo", async ctx => {
     });
     uploadData = r.data;
   } catch (e) {
-    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Upload failed: ${e}`);
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Upload failed: ${sanitize(String(e))}`);
     return;
   }
 
@@ -1650,9 +1579,6 @@ bot.on("message:photo", async ctx => {
   await ctx.replyWithChatAction("typing");
   await runAgentTask(ctx, `A photo was just uploaded to the WordPress media library (ID: ${mediaId}, URL: ${mediaUrl}). ${caption}`);
 });
-
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
 async function main(): Promise<void> {
   // Register bot commands in Telegram's menu
   await bot.api.setMyCommands([
