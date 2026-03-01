@@ -147,6 +147,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+      - /root
     cap_drop:
       - ALL
     security_opt:
