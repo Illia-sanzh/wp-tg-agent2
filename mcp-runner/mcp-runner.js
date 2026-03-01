@@ -199,7 +199,11 @@ function findMcpBin(name, pkgName) {
 function introspectTools(name, pkgName, env) {
   return new Promise((resolve, reject) => {
     const bin = findMcpBin(name, pkgName);
-    if (!bin) return reject(new Error(`Cannot find entry point for ${pkgName}`));
+    if (!bin) {
+      console.warn(`[mcp-runner] No entry point found for ${pkgName}`);
+      return resolve([]);
+    }
+    console.log(`[mcp-runner] Introspecting ${name} via ${bin}`);
 
     const proc = spawn("node", [bin], {
       env:   { ...process.env, ...env, PATH: process.env.PATH },
@@ -209,14 +213,15 @@ function introspectTools(name, pkgName, env) {
     let buf = "";
     const tools = [];
     let phase = "init"; // init → list → done
+    let stderr = "";
     const timeout = setTimeout(() => {
+      console.warn(`[mcp-runner] Introspection timed out for ${name} (phase=${phase})`);
       proc.kill("SIGKILL");
       resolve(tools);
     }, 30000);
 
     proc.stdout.on("data", d => {
       buf += d.toString();
-      // Process complete JSON-RPC lines
       let nl;
       while ((nl = buf.indexOf("\n")) !== -1) {
         const line = buf.slice(0, nl).trim();
@@ -226,31 +231,36 @@ function introspectTools(name, pkgName, env) {
         try { msg = JSON.parse(line); } catch { continue; }
 
         if (phase === "init" && msg.id === 1) {
-          // Initialize succeeded — send initialized notification then tools/list
+          console.log(`[mcp-runner] ${name}: initialized OK, requesting tools`);
           proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
           proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\n");
           phase = "list";
         } else if (phase === "list" && msg.id === 2) {
           if (msg.result && msg.result.tools) tools.push(...msg.result.tools);
+          console.log(`[mcp-runner] ${name}: discovered ${tools.length} tool(s)`);
           phase = "done";
           proc.stdin.end();
         }
       }
     });
 
-    proc.stderr.on("data", () => {}); // ignore stderr
+    proc.stderr.on("data", d => { stderr += d.toString(); });
 
-    proc.on("close", () => {
+    proc.on("close", code => {
       clearTimeout(timeout);
+      if (phase !== "done") {
+        console.warn(`[mcp-runner] ${name}: process exited (code=${code}, phase=${phase})`);
+        if (stderr) console.warn(`[mcp-runner] ${name} stderr: ${stderr.slice(0, 500)}`);
+      }
       resolve(tools);
     });
 
     proc.on("error", err => {
       clearTimeout(timeout);
-      reject(err);
+      console.warn(`[mcp-runner] ${name}: spawn error: ${err.message}`);
+      resolve([]);
     });
 
-    // Start with initialize
     proc.stdin.write(JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "initialize",
       params: { protocolVersion: "2024-11-05", capabilities: {},
