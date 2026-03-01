@@ -1136,30 +1136,32 @@ bot.command("mcp", async ctx => {
 
   if (sub === "available") {
     const CATEGORY_EMOJI: Record<string, string> = {
-      Utility: "🔧", Database: "🗄", Search: "🔍", Developer: "⚙️",
+      Utility: "🔧", Database: "🗄", Search: "🔍", Developer: "⚙",
       Productivity: "📋", Communication: "💬", Payments: "💳",
-      Browser: "🌐", Cloud: "☁️", CMS: "📝", Google: "📊",
+      Browser: "🌐", Cloud: "☁", CMS: "📝", Google: "📊",
       AI: "🤖", Media: "🎬", Sales: "📈",
     };
     const cats: Record<string, Array<[string, McpEntry]>> = {};
     for (const [slug, info] of Object.entries(MCP_CATALOG)) {
-      (cats[info.category] ??= []).push([slug, info]);
+      if (!cats[info.category]) cats[info.category] = [];
+      cats[info.category].push([slug, info]);
     }
     const total = Object.keys(MCP_CATALOG).length;
-    const lines = [`📦 *Available MCPs* (${total}) — \`/mcp install <name>\`\n`];
+    const lines = [`📦 *Available MCPs* (${total})\nInstall: \`/mcp install <name>\`\n`];
     for (const [cat, entries] of Object.entries(cats)) {
       const emoji = CATEGORY_EMOJI[cat] ?? "📦";
       lines.push(`*${emoji} ${cat}*`);
       for (const [slug, info] of entries) {
         const reqVars = info.env.filter(e => e.required);
-        const req = reqVars.length
-          ? "needs " + reqVars.map(e => `\`${e.name}\``).join(", ")
-          : "no setup needed";
-        lines.push(`• \`${slug}\` — ${info.description}\n    _${req}_`);
+        let line = `• \`${slug}\` — ${info.description}`;
+        if (reqVars.length) {
+          line += ` [${reqVars.map(e => e.name).join(", ")}]`;
+        }
+        lines.push(line);
       }
       lines.push("");
     }
-    lines.push("💡 `/mcp info <name>` — full setup details & env var hints");
+    lines.push("Use `/mcp info <name>` for setup details");
 
     const chunks: string[] = [];
     let current = "";
