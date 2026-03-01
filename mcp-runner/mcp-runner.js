@@ -194,9 +194,9 @@ function findMcpBin(name, pkgName) {
   return null;
 }
 
-// ── Spawn MCP server, send JSON-RPC, return response ─────────────────────────
+// ── Spawn MCP server and do JSON-RPC introspection ───────────────────────────
 
-function callMcpRpc(name, pkgName, env, messages) {
+function introspectTools(name, pkgName, env) {
   return new Promise((resolve, reject) => {
     const bin = findMcpBin(name, pkgName);
     if (!bin) return reject(new Error(`Cannot find entry point for ${pkgName}`));
@@ -206,25 +206,43 @@ function callMcpRpc(name, pkgName, env, messages) {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    let stdout = "";
-    let stderr = "";
+    let buf = "";
+    const tools = [];
+    let phase = "init"; // init → list → done
     const timeout = setTimeout(() => {
       proc.kill("SIGKILL");
-      reject(new Error("MCP process timed out after 30s"));
+      resolve(tools);
     }, 30000);
 
-    proc.stdout.on("data", d => { stdout += d.toString(); });
-    proc.stderr.on("data", d => { stderr += d.toString(); });
+    proc.stdout.on("data", d => {
+      buf += d.toString();
+      // Process complete JSON-RPC lines
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
 
-    proc.on("close", code => {
-      clearTimeout(timeout);
-      // Parse all JSON-RPC response lines
-      const lines = stdout.split("\n").filter(l => l.trim());
-      const responses = [];
-      for (const line of lines) {
-        try { responses.push(JSON.parse(line)); } catch {}
+        if (phase === "init" && msg.id === 1) {
+          // Initialize succeeded — send initialized notification then tools/list
+          proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+          proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\n");
+          phase = "list";
+        } else if (phase === "list" && msg.id === 2) {
+          if (msg.result && msg.result.tools) tools.push(...msg.result.tools);
+          phase = "done";
+          proc.stdin.end();
+        }
       }
-      resolve(responses);
+    });
+
+    proc.stderr.on("data", () => {}); // ignore stderr
+
+    proc.on("close", () => {
+      clearTimeout(timeout);
+      resolve(tools);
     });
 
     proc.on("error", err => {
@@ -232,31 +250,13 @@ function callMcpRpc(name, pkgName, env, messages) {
       reject(err);
     });
 
-    // Write all messages sequentially
-    for (const msg of messages) {
-      proc.stdin.write(JSON.stringify(msg) + "\n");
-    }
-    proc.stdin.end();
-  });
-}
-
-// ── Tool introspection: initialize + tools/list ───────────────────────────────
-
-async function introspectTools(name, pkgName, env) {
-  const messages = [
-    { jsonrpc: "2.0", id: 1, method: "initialize",
+    // Start with initialize
+    proc.stdin.write(JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "initialize",
       params: { protocolVersion: "2024-11-05", capabilities: {},
-                clientInfo: { name: "openclaw-mcp-runner", version: "1.0" } } },
-    { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
-  ];
-
-  const responses = await callMcpRpc(name, pkgName, env, messages);
-  for (const r of responses) {
-    if (r.id === 2 && r.result && r.result.tools) {
-      return r.result.tools;
-    }
-  }
-  return [];
+                clientInfo: { name: "openclaw-mcp-runner", version: "1.0" } },
+    }) + "\n");
+  });
 }
 
 // ── GET /health ────────────────────────────────────────────────────────────────
@@ -356,29 +356,83 @@ app.post("/mcps/:name/call", async (req, res) => {
 
   const env = readEnv(name);
 
-  const messages = [
-    { jsonrpc: "2.0", id: 1, method: "initialize",
-      params: { protocolVersion: "2024-11-05", capabilities: {},
-                clientInfo: { name: "openclaw-mcp-runner", version: "1.0" } } },
-    { jsonrpc: "2.0", id: 2, method: "tools/call",
-      params: { name: tool, arguments: toolArgs } },
-  ];
-
   try {
-    const responses = await callMcpRpc(name, manifest.package, env, messages);
-    for (const r of responses) {
-      if (r.id === 2) {
-        if (r.error) return res.status(500).json({ error: r.error.message || JSON.stringify(r.error) });
-        const content = r.result?.content || [];
-        const text    = content.map(c => c.text || JSON.stringify(c)).join("\n");
-        return res.json({ result: text, raw: r.result });
-      }
-    }
-    res.status(500).json({ error: "No response from MCP server" });
+    const result = await callMcpTool(name, manifest.package, env, tool, toolArgs);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ── Spawn MCP server, initialize properly, then call a tool ──────────────────
+
+function callMcpTool(name, pkgName, env, tool, toolArgs) {
+  return new Promise((resolve, reject) => {
+    const bin = findMcpBin(name, pkgName);
+    if (!bin) return reject(new Error(`Cannot find entry point for ${pkgName}`));
+
+    const proc = spawn("node", [bin], {
+      env:   { ...process.env, ...env, PATH: process.env.PATH },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let buf = "";
+    let phase = "init";
+    const timeout = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error("MCP process timed out after 30s"));
+    }, 30000);
+
+    proc.stdout.on("data", d => {
+      buf += d.toString();
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+
+        if (phase === "init" && msg.id === 1) {
+          proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+          proc.stdin.write(JSON.stringify({
+            jsonrpc: "2.0", id: 2, method: "tools/call",
+            params: { name: tool, arguments: toolArgs },
+          }) + "\n");
+          phase = "call";
+        } else if (phase === "call" && msg.id === 2) {
+          phase = "done";
+          proc.stdin.end();
+          if (msg.error) {
+            resolve({ error: msg.error.message || JSON.stringify(msg.error) });
+          } else {
+            const content = msg.result?.content || [];
+            const text = content.map(c => c.text || JSON.stringify(c)).join("\n");
+            resolve({ result: text, raw: msg.result });
+          }
+        }
+      }
+    });
+
+    proc.stderr.on("data", () => {});
+
+    proc.on("close", () => {
+      clearTimeout(timeout);
+      if (phase !== "done") resolve({ error: "No response from MCP server" });
+    });
+
+    proc.on("error", err => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+
+    proc.stdin.write(JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {},
+                clientInfo: { name: "openclaw-mcp-runner", version: "1.0" } },
+    }) + "\n");
+  });
+}
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
