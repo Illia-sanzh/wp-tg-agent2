@@ -31,47 +31,86 @@ const MCPS_DIR = "/mcps";
 
 app.use(express.json({ limit: "1mb" }));
 
-// ── Whitelist — only these packages may be installed ─────────────────────────
-// Must stay in sync with _MCP_CATALOG in telegram-bot/bot.py
+// Must stay in sync with MCP_CATALOG in telegram-bot/bot.ts
 const WHITELIST = new Set([
-  // Utility / No auth
-  "@modelcontextprotocol/server-fetch",
-  "@modelcontextprotocol/server-memory",
-  "@modelcontextprotocol/server-filesystem",
-  "@modelcontextprotocol/server-sequentialthinking",
-  "@modelcontextprotocol/server-time",
-  "@modelcontextprotocol/server-everything",
-
-  // Databases
-  "@modelcontextprotocol/server-postgres",
-  "@modelcontextprotocol/server-sqlite",
-  "@supabase/mcp-server-supabase",
-  "@qdrant/mcp-server-qdrant",
-  "@motherduck/mcp-server-duckdb",
-
-  // Search
+  "@0xshariq/docker-mcp-server",
+  "@advanced-communities/salesforce-mcp-server",
+  "@agentx-ai/mailchimp-mcp-server",
+  "@apify/actors-mcp-server",
+  "@atlassian-mcp-server/bitbucket",
+  "@azure/mcp",
+  "@benborla29/mcp-server-mysql",
   "@brave/brave-search-mcp-server",
-  "tavily-mcp",
-  "exa-mcp-server",
-  "@mendable/firecrawl-mcp",
-  "@modelcontextprotocol/server-google-maps",
-
-  // Developer tools
-  "@modelcontextprotocol/server-github",
+  "@browserbasehq/mcp-server-browserbase",
+  "@chykalophia/clickup-mcp-server",
+  "@circleci/mcp-server-circleci",
   "@cloudflare/mcp-server-cloudflare",
-  "@sentry/mcp-server",
-  "@open-mcp/vercel",
-
-  // Productivity
-  "@notionhq/notion-mcp-server",
-  "linear-mcp-server",
-
-  // Communication
+  "@cocal/google-calendar-mcp",
+  "@contentful/mcp-server",
+  "@elastic/mcp-server-elasticsearch",
+  "@ergut/mcp-bigquery-server",
+  "@gpwork4u/google-sheets-mcp",
+  "@hubspot/mcp-server",
+  "@iflow-mcp/trello-mcp-server",
+  "@kimtaeyoon83/mcp-server-youtube-transcript",
+  "@mendable/firecrawl-mcp",
+  "@microagents/mcp-server-dropbox",
+  "@modelcontextprotocol/server-aws-kb-retrieval",
+  "@modelcontextprotocol/server-everything",
+  "@modelcontextprotocol/server-fetch",
+  "@modelcontextprotocol/server-filesystem",
+  "@modelcontextprotocol/server-gdrive",
+  "@modelcontextprotocol/server-github",
+  "@modelcontextprotocol/server-gitlab",
+  "@modelcontextprotocol/server-google-maps",
+  "@modelcontextprotocol/server-memory",
+  "@modelcontextprotocol/server-postgres",
+  "@modelcontextprotocol/server-puppeteer",
+  "@modelcontextprotocol/server-redis",
+  "@modelcontextprotocol/server-sequentialthinking",
   "@modelcontextprotocol/server-slack",
-
-  // Payments / E-commerce
+  "@modelcontextprotocol/server-sqlite",
+  "@modelcontextprotocol/server-time",
+  "@mongodb-js/mongodb-mcp-server",
+  "@motherduck/mcp-server-duckdb",
+  "@neondatabase/mcp-server-neon",
+  "@notionhq/notion-mcp-server",
+  "@open-mcp/vercel",
+  "@perplexity-ai/mcp-server",
+  "@pinecone-database/mcp",
+  "@playwright/mcp",
+  "@prama13/turso-mcp",
+  "@qdrant/mcp-server-qdrant",
+  "@ryukimin/ghost-mcp",
+  "@sanity/mcp-server",
+  "@sentry/mcp-server",
   "@stripe/mcp",
+  "@supabase/mcp-server-supabase",
+  "@tbrgeek/spotify-mcp-server",
+  "@techsend/gmail-mcp-server",
+  "@twilio-alpha/mcp",
+  "@upstash/mcp-server",
+  "@zereight/mcp-confluence",
+  "aws-s3-mcp",
+  "box-mcp-server",
+  "datadog-mcp-server",
+  "discord-mcp-server",
+  "exa-mcp-server",
+  "jira-mcp",
+  "kubernetes-mcp-server",
+  "linear-mcp-server",
+  "mcp-server-commands",
+  "openapi-mcp-server",
+  "replicate-mcp",
+  "resend-mcp",
   "shopify-mcp-server",
+  "strapi-mcp",
+  "tavily-mcp",
+  "telegram-mcp-server",
+  "terraform-mcp-server",
+  "todoist-mcp-server",
+  "typesense-mcp-server",
+  "wordpress-mcp",
 ]);
 
 // ── Encryption helpers (AES-256-GCM) ─────────────────────────────────────────

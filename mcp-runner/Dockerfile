@@ -14,6 +14,9 @@ COPY mcp-runner.js ./
 # MCP packages install here (Docker named volume mounted at runtime)
 RUN mkdir -p /mcps
 
+# npm cache goes to /tmp (writable via tmpfs when rootfs is read-only)
+ENV npm_config_cache=/tmp/.npm
+
 EXPOSE 9000
 
 ENTRYPOINT ["/sbin/tini", "--"]

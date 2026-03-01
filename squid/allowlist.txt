@@ -31,7 +31,8 @@
 # ── WP-CLI updates ────────────────────────────────────────────────────────────
 .wp-cli.org
 
-# ── Package managers (pip, apt) ───────────────────────────────────────────────
+# ── Package managers (npm, pip, apt) ──────────────────────────────────────────
+.registry.npmjs.org
 .pypi.org
 .files.pythonhosted.org
 .archive.ubuntu.com
