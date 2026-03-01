@@ -11,7 +11,8 @@
       "Bash(npx tsx --eval 'import \"\"./bot.ts\"\"')",
       "Bash(node -e \":*)",
       "Bash(node -e 'const fs=require\\(\"\"fs\"\"\\);const src=fs.readFileSync\\(\"\"bot.ts\"\",\"\"utf8\"\"\\);const m=src.match\\(/const MCP_CATALOG.*?^};/ms\\);if\\(!m\\){console.log\\(\"\"ERR\"\"\\);process.exit\\(1\\);}const code=m[0].replace\\(/^const MCP_CATALOG:.*?= /,\"\"module.exports = \"\"\\);fs.writeFileSync\\(\"\"/tmp/tc.js\"\",code\\);const c=require\\(\"\"/tmp/tc.js\"\"\\);const keys=Object.keys\\(c\\);console.log\\(\"\"Total:\"\",keys.length\\);const cats={};for\\(const[k,v]of Object.entries\\(c\\)\\){cats[v.category]=\\(cats[v.category]||0\\)+1;}console.log\\(JSON.stringify\\(cats,null,2\\)\\);')",
-      "Bash(node /tmp/count_catalog.js)"
+      "Bash(node /tmp/count_catalog.js)",
+      "WebFetch(domain:www.npmjs.com)"
     ]
   }
 }

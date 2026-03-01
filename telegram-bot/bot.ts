@@ -666,11 +666,13 @@ const MCP_CATALOG: Record<string, McpEntry> = {
     ],
   },
   "gmail": {
-    package: "@techsend/gmail-mcp-server",
-    description: "Gmail — read, send, search, label and manage emails (25+ tools)",
+    package: "@shinzolabs/gmail-mcp",
+    description: "Gmail — send, search, read, label, draft, filter and manage emails and threads",
     category: "Google",
     env: [
-      { name: "GOOGLE_OAUTH_CREDENTIALS", hint: "OAuth 2.0 client credentials JSON from Google Cloud Console", required: true },
+      { name: "CLIENT_ID", hint: "OAuth 2.0 client ID from Google Cloud Console", required: true },
+      { name: "CLIENT_SECRET", hint: "OAuth 2.0 client secret from Google Cloud Console", required: true },
+      { name: "REFRESH_TOKEN", hint: "OAuth 2.0 refresh token (run auth flow to obtain)", required: true },
     ],
   },
   "google-sheets": {

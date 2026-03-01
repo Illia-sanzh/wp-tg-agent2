@@ -87,7 +87,7 @@ const WHITELIST = new Set([
   "@stripe/mcp",
   "@supabase/mcp-server-supabase",
   "@tbrgeek/spotify-mcp-server",
-  "@techsend/gmail-mcp-server",
+  "@shinzolabs/gmail-mcp",
   "@twilio-alpha/mcp",
   "@upstash/mcp-server",
   "@zereight/mcp-confluence",
