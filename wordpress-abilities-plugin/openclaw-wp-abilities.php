@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-add_action( 'init', 'openclaw_register_abilities' );
+add_action( 'wp_abilities_api_init', 'openclaw_register_abilities' );
 
 function openclaw_register_abilities(): void {
     if ( ! function_exists( 'wp_register_ability' ) ) {
