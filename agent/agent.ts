@@ -41,6 +41,10 @@ const WP_ADMIN_PASSWORD = process.env.WP_ADMIN_PASSWORD ?? "";
 const BRIDGE_SECRET     = process.env.BRIDGE_SECRET     ?? "";
 const SKILL_FILE        = process.env.SKILL_FILE        ?? "/app/SKILL.md";
 
+const WP_MCP_ENDPOINT = WP_URL
+  ? WP_URL.replace(/\/$/, "") + "/wp-json/mcp/mcp-adapter-default-server"
+  : "";
+
 const TELEGRAM_BOT_TOKEN     = process.env.TELEGRAM_BOT_TOKEN     ?? "";
 const TELEGRAM_ADMIN_USER_ID = process.env.TELEGRAM_ADMIN_USER_ID ?? "";
 
@@ -265,6 +269,13 @@ Use the \`schedule_task\` tool when the user asks to do something at a specific 
 ## Custom Skills
 Additional tool functions may be available below if YAML skill files are present in
 openclaw-config/skills/. Use any loaded skill the same way as built-in tools.
+
+## WordPress Abilities
+WordPress Abilities are plugin-registered tools exposed via the MCP Adapter (WP 7.0+).
+They appear as tools with the \`wp_ability__\` prefix. Use them for operations like
+toggling maintenance mode or bulk-updating site identity — things not easily done
+via WP-CLI or the REST API. They communicate directly with WordPress through its
+MCP endpoint.
 `;
 }
 
@@ -439,8 +450,70 @@ async function loadMcpTools(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
 
 let cachedMcpTools: OpenAI.Chat.ChatCompletionTool[] = [];
 
+// ─── WP Abilities loader (WordPress 7.0 MCP Adapter) ─────────────────────────
+
+let cachedWpAbilityTools: OpenAI.Chat.ChatCompletionTool[] = [];
+const wpAbilityNameMap = new Map<string, string>();
+
+async function loadWpAbilities(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
+  if (!WP_MCP_ENDPOINT || !WP_APP_PASSWORD) {
+    console.warn("[wp-abilities] Skipped: WP_URL or WP_APP_PASSWORD not set");
+    return [];
+  }
+
+  const auth = `Basic ${Buffer.from(`${WP_ADMIN_USER}:${WP_APP_PASSWORD}`).toString("base64")}`;
+  const headers = { "Content-Type": "application/json", Authorization: auth };
+
+  try {
+    // Step 1: Initialize MCP session
+    await axios.post(WP_MCP_ENDPOINT, {
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "openclaw-agent", version: "1.0" },
+      },
+    }, { headers, timeout: 15_000, proxy: false });
+
+    // Step 2: Send initialized notification
+    await axios.post(WP_MCP_ENDPOINT, {
+      jsonrpc: "2.0", method: "notifications/initialized",
+    }, { headers, timeout: 5_000, proxy: false }).catch(() => {});
+
+    // Step 3: List tools
+    const listResp = await axios.post(WP_MCP_ENDPOINT, {
+      jsonrpc: "2.0", id: 2, method: "tools/list", params: {},
+    }, { headers, timeout: 15_000, proxy: false });
+
+    const mcpTools: Array<{ name: string; description?: string; inputSchema?: any }> =
+      listResp.data?.result?.tools ?? [];
+
+    wpAbilityNameMap.clear();
+    const tools: OpenAI.Chat.ChatCompletionTool[] = [];
+    for (const t of mcpTools) {
+      if (!t.name) continue;
+      const safeSuffix = t.name.replace(/[^a-zA-Z0-9_]/g, "_");
+      const fnName = `wp_ability__${safeSuffix}`;
+      wpAbilityNameMap.set(safeSuffix, t.name);
+      tools.push({
+        type: "function",
+        function: {
+          name:        fnName,
+          description: `[WP Ability] ${t.description ?? t.name}`,
+          parameters:  t.inputSchema ?? { type: "object", properties: {} },
+        },
+      });
+    }
+    if (tools.length > 0) console.log(`[wp-abilities] Loaded ${tools.length} tool(s)`);
+    return tools;
+  } catch (e: any) {
+    console.warn(`[wp-abilities] Failed to load: ${e.message}`);
+    return [];
+  }
+}
+
 function getAllTools(): OpenAI.Chat.ChatCompletionTool[] {
-  return [...TOOLS, ...cachedCustomTools, ...cachedMcpTools];
+  return [...TOOLS, ...cachedCustomTools, ...cachedMcpTools, ...cachedWpAbilityTools];
 }
 
 // ─── Tool implementations ─────────────────────────────────────────────────────
@@ -640,6 +713,39 @@ async function dispatchMcpTool(toolName: string, args: Record<string, any>): Pro
   }
 }
 
+async function dispatchWpAbility(toolName: string, args: Record<string, any>): Promise<string> {
+  if (!WP_MCP_ENDPOINT || !WP_APP_PASSWORD) {
+    return "ERROR: WP_URL or WP_APP_PASSWORD not configured for WP Abilities.";
+  }
+
+  const filteredArgs  = Object.fromEntries(Object.entries(args).filter(([k]) => k !== "reason"));
+  const safeSuffix    = toolName.slice("wp_ability__".length);
+  const originalName  = wpAbilityNameMap.get(safeSuffix) ?? safeSuffix.replace(/_/g, "-");
+
+  const auth    = `Basic ${Buffer.from(`${WP_ADMIN_USER}:${WP_APP_PASSWORD}`).toString("base64")}`;
+  const headers = { "Content-Type": "application/json", Authorization: auth };
+
+  try {
+    const resp = await axios.post(WP_MCP_ENDPOINT, {
+      jsonrpc: "2.0", id: 1, method: "tools/call",
+      params: { name: originalName, arguments: filteredArgs },
+    }, { headers, timeout: 30_000, proxy: false });
+
+    const result = resp.data;
+    if (result.error) {
+      return `ERROR from WP Ability ${originalName}: ${result.error.message ?? JSON.stringify(result.error)}`;
+    }
+    const content: Array<{ text?: string }> = result.result?.content ?? [];
+    const text = content.map(c => c.text ?? JSON.stringify(c)).join("\n");
+    return text || JSON.stringify(result.result ?? "(no result)");
+  } catch (e: any) {
+    if (e.response) {
+      return `ERROR calling WP Ability: HTTP ${e.response.status} — ${JSON.stringify(e.response.data).slice(0, 500)}`;
+    }
+    return `ERROR calling WP Ability ${originalName}: ${e.message}`;
+  }
+}
+
 async function uploadMediaToWp(
   fileBytes: Buffer,
   filename: string,
@@ -709,8 +815,9 @@ async function dispatchTool(name: string, args: Record<string, any>): Promise<st
   if (name === "wp_rest")        return wpRest(args.method ?? "GET", args.endpoint ?? "/", args.body, args.params);
   if (name === "wp_cli_remote")  return wpCliRemote(args.command ?? "");
   if (name === "schedule_task")  return scheduleTaskFn(args.task ?? "", args.run_at, args.cron, args.label);
-  if (name.startsWith("skill_")) return dispatchSkill(name, args);
-  if (name.startsWith("mcp_"))   return dispatchMcpTool(name, args);
+  if (name.startsWith("skill_"))      return dispatchSkill(name, args);
+  if (name.startsWith("mcp_"))        return dispatchMcpTool(name, args);
+  if (name.startsWith("wp_ability__")) return dispatchWpAbility(name, args);
   return `ERROR: Unknown tool '${name}'`;
 }
 
@@ -729,7 +836,8 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
   if (fnName === "wp_rest")       return reason ? `🌐 ${reason.slice(0, 120)}` : `🌐 ${fnArgs.method ?? "GET"} ${fnArgs.endpoint ?? ""}`;
   if (fnName === "wp_cli_remote") return reason ? `🔧 ${reason.slice(0, 120)}` : `🔧 wp ${(fnArgs.command ?? "").slice(0, 100)}`;
   if (fnName === "schedule_task") return reason ? `⏰ ${reason.slice(0, 120)}` : `⏰ Scheduling: ${(fnArgs.label ?? fnArgs.task ?? "").slice(0, 80)}`;
-  if (fnName.startsWith("skill_")) return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
+  if (fnName.startsWith("skill_"))      return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
+  if (fnName.startsWith("wp_ability__")) return reason ? `🔮 ${reason.slice(0, 120)}` : `🔮 WP: ${fnName.slice("wp_ability__".length).replace(/_/g, " ")}`;
   return `⚙️ ${reason || fnName}`;
 }
 
@@ -896,6 +1004,7 @@ expressApp.get("/health", (_req, res) => {
     scheduled_jobs:  scheduler.jobCount,
     custom_skills:   cachedCustomTools.length,
     mcp_tools:       cachedMcpTools.length,
+    wp_ability_tools: cachedWpAbilityTools.length,
     whisper:         whisperClient ? "available" : "unavailable (set OPENAI_API_KEY)",
   });
 });
@@ -1108,6 +1217,12 @@ expressApp.post("/reload-mcps", async (_req, res) => {
   res.json({ loaded: cachedMcpTools.length, previous: oldCount, tools: cachedMcpTools.map(t => t.function.name) });
 });
 
+expressApp.post("/reload-wp-abilities", async (_req, res) => {
+  const oldCount = cachedWpAbilityTools.length;
+  cachedWpAbilityTools = await loadWpAbilities();
+  res.json({ loaded: cachedWpAbilityTools.length, previous: oldCount, tools: cachedWpAbilityTools.map(t => t.function.name) });
+});
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -1116,6 +1231,9 @@ async function main(): Promise<void> {
 
   cachedMcpTools = await loadMcpTools();
   console.log(`[agent] MCP tools loaded: ${cachedMcpTools.length}`);
+
+  cachedWpAbilityTools = await loadWpAbilities();
+  console.log(`[agent] WP Ability tools loaded: ${cachedWpAbilityTools.length}`);
 
   scheduler.start();
   console.log(`[scheduler] Started — pending jobs: ${scheduler.jobCount}`);
