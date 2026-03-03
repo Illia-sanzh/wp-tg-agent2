@@ -61,6 +61,7 @@ function openclaw_register_abilities(): void {
                 return current_user_can( 'manage_options' );
             },
             'meta' => array(
+                'mcp'          => array( 'public' => true ),
                 'show_in_rest' => true,
             ),
         )
@@ -92,6 +93,7 @@ function openclaw_register_abilities(): void {
                 return current_user_can( 'manage_options' );
             },
             'meta' => array(
+                'mcp'          => array( 'public' => true ),
                 'show_in_rest' => true,
             ),
         )
