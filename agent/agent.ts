@@ -41,8 +41,10 @@ const WP_ADMIN_PASSWORD = process.env.WP_ADMIN_PASSWORD ?? "";
 const BRIDGE_SECRET     = process.env.BRIDGE_SECRET     ?? "";
 const SKILL_FILE        = process.env.SKILL_FILE        ?? "/app/SKILL.md";
 
+// MCP Adapter is always on the same host as WordPress — use host.docker.internal
+// (in NO_PROXY, avoids Squid) rather than WP_URL which may be a public hostname.
 const WP_MCP_ENDPOINT = WP_URL
-  ? WP_URL.replace(/\/$/, "") + "/wp-json/mcp/mcp-adapter-default-server"
+  ? "http://host.docker.internal/wp-json/mcp/mcp-adapter-default-server"
   : "";
 
 const TELEGRAM_BOT_TOKEN     = process.env.TELEGRAM_BOT_TOKEN     ?? "";
