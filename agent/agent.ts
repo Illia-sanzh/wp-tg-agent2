@@ -453,7 +453,44 @@ let cachedMcpTools: OpenAI.Chat.ChatCompletionTool[] = [];
 // ─── WP Abilities loader (WordPress 7.0 MCP Adapter) ─────────────────────────
 
 let cachedWpAbilityTools: OpenAI.Chat.ChatCompletionTool[] = [];
-const wpAbilityNameMap = new Map<string, string>();
+const wpAbilityNameMap = new Map<string, string>(); // safe suffix → original ability name
+
+/** Open an MCP session with the WP MCP Adapter. Returns { headers, sessionId }. */
+async function wpMcpSession(): Promise<{ headers: Record<string, string> }> {
+  const auth = `Basic ${Buffer.from(`${WP_ADMIN_USER}:${WP_APP_PASSWORD}`).toString("base64")}`;
+  const base: Record<string, string> = { "Content-Type": "application/json", Authorization: auth };
+
+  // Initialize — capture Mcp-Session-Id from response headers
+  const initResp = await axios.post(WP_MCP_ENDPOINT, {
+    jsonrpc: "2.0", id: 1, method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05", capabilities: {},
+      clientInfo: { name: "openclaw-agent", version: "1.0" },
+    },
+  }, { headers: base, timeout: 15_000, proxy: false });
+
+  const sessionId = initResp.headers["mcp-session-id"] ?? "";
+  const headers = sessionId ? { ...base, "Mcp-Session-Id": sessionId } : base;
+
+  // Send initialized notification
+  await axios.post(WP_MCP_ENDPOINT, {
+    jsonrpc: "2.0", method: "notifications/initialized",
+  }, { headers, timeout: 5_000, proxy: false }).catch(() => {});
+
+  return { headers };
+}
+
+/** Call an MCP tool on the WP Adapter within an existing session. */
+async function wpMcpCall(
+  headers: Record<string, string>, toolName: string, args: Record<string, any>, id = 1,
+): Promise<any> {
+  const resp = await axios.post(WP_MCP_ENDPOINT, {
+    jsonrpc: "2.0", id, method: "tools/call",
+    params: { name: toolName, arguments: args },
+  }, { headers, timeout: 30_000, proxy: false });
+  if (resp.data?.error) throw new Error(resp.data.error.message ?? JSON.stringify(resp.data.error));
+  return resp.data?.result;
+}
 
 async function loadWpAbilities(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
   if (!WP_MCP_ENDPOINT || !WP_APP_PASSWORD) {
@@ -461,50 +498,45 @@ async function loadWpAbilities(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
     return [];
   }
 
-  const auth = `Basic ${Buffer.from(`${WP_ADMIN_USER}:${WP_APP_PASSWORD}`).toString("base64")}`;
-  const headers = { "Content-Type": "application/json", Authorization: auth };
-
   try {
-    // Step 1: Initialize MCP session
-    await axios.post(WP_MCP_ENDPOINT, {
-      jsonrpc: "2.0", id: 1, method: "initialize",
-      params: {
-        protocolVersion: "2024-11-05",
-        capabilities: {},
-        clientInfo: { name: "openclaw-agent", version: "1.0" },
-      },
-    }, { headers, timeout: 15_000, proxy: false });
+    const { headers } = await wpMcpSession();
 
-    // Step 2: Send initialized notification
-    await axios.post(WP_MCP_ENDPOINT, {
-      jsonrpc: "2.0", method: "notifications/initialized",
-    }, { headers, timeout: 5_000, proxy: false }).catch(() => {});
+    // Discover abilities via the MCP Adapter meta-tool
+    const discoverResult = await wpMcpCall(headers, "mcp-adapter-discover-abilities", {}, 2);
+    const abilities: Array<{ name: string; label: string; description: string }> =
+      discoverResult?.structuredContent?.abilities ?? JSON.parse(discoverResult?.content?.[0]?.text ?? "{}").abilities ?? [];
 
-    // Step 3: List tools
-    const listResp = await axios.post(WP_MCP_ENDPOINT, {
-      jsonrpc: "2.0", id: 2, method: "tools/list", params: {},
-    }, { headers, timeout: 15_000, proxy: false });
+    if (abilities.length === 0) {
+      console.log("[wp-abilities] No abilities discovered");
+      return [];
+    }
 
-    const mcpTools: Array<{ name: string; description?: string; inputSchema?: any }> =
-      listResp.data?.result?.tools ?? [];
-
+    // Get detailed info (input schema) for each ability
     wpAbilityNameMap.clear();
     const tools: OpenAI.Chat.ChatCompletionTool[] = [];
-    for (const t of mcpTools) {
-      if (!t.name) continue;
-      const safeSuffix = t.name.replace(/[^a-zA-Z0-9_]/g, "_");
+    for (const ability of abilities) {
+      const safeSuffix = ability.name.replace(/[^a-zA-Z0-9_]/g, "_");
       const fnName = `wp_ability__${safeSuffix}`;
-      wpAbilityNameMap.set(safeSuffix, t.name);
+      wpAbilityNameMap.set(safeSuffix, ability.name);
+
+      let inputSchema: any = { type: "object", properties: {} };
+      try {
+        const infoResult = await wpMcpCall(headers, "mcp-adapter-get-ability-info", { ability_name: ability.name }, 3);
+        const info = infoResult?.structuredContent ?? JSON.parse(infoResult?.content?.[0]?.text ?? "{}");
+        if (info.input_schema) inputSchema = info.input_schema;
+      } catch { /* use default schema */ }
+
       tools.push({
         type: "function",
         function: {
-          name:        fnName,
-          description: `[WP Ability] ${t.description ?? t.name}`,
-          parameters:  t.inputSchema ?? { type: "object", properties: {} },
+          name: fnName,
+          description: `[WP Ability] ${ability.description || ability.label || ability.name}`,
+          parameters: inputSchema,
         },
       });
     }
-    if (tools.length > 0) console.log(`[wp-abilities] Loaded ${tools.length} tool(s)`);
+
+    console.log(`[wp-abilities] Loaded ${tools.length} tool(s): ${abilities.map(a => a.name).join(", ")}`);
     return tools;
   } catch (e: any) {
     console.warn(`[wp-abilities] Failed to load: ${e.message}`);
@@ -718,31 +750,26 @@ async function dispatchWpAbility(toolName: string, args: Record<string, any>): P
     return "ERROR: WP_URL or WP_APP_PASSWORD not configured for WP Abilities.";
   }
 
-  const filteredArgs  = Object.fromEntries(Object.entries(args).filter(([k]) => k !== "reason"));
-  const safeSuffix    = toolName.slice("wp_ability__".length);
-  const originalName  = wpAbilityNameMap.get(safeSuffix) ?? safeSuffix.replace(/_/g, "-");
-
-  const auth    = `Basic ${Buffer.from(`${WP_ADMIN_USER}:${WP_APP_PASSWORD}`).toString("base64")}`;
-  const headers = { "Content-Type": "application/json", Authorization: auth };
+  const filteredArgs = Object.fromEntries(Object.entries(args).filter(([k]) => k !== "reason"));
+  const safeSuffix   = toolName.slice("wp_ability__".length);
+  const abilityName  = wpAbilityNameMap.get(safeSuffix) ?? safeSuffix.replace(/_/g, "-");
 
   try {
-    const resp = await axios.post(WP_MCP_ENDPOINT, {
-      jsonrpc: "2.0", id: 1, method: "tools/call",
-      params: { name: originalName, arguments: filteredArgs },
-    }, { headers, timeout: 30_000, proxy: false });
+    const { headers } = await wpMcpSession();
+    const result = await wpMcpCall(headers, "mcp-adapter-execute-ability", {
+      ability_name: abilityName, parameters: filteredArgs,
+    });
 
-    const result = resp.data;
-    if (result.error) {
-      return `ERROR from WP Ability ${originalName}: ${result.error.message ?? JSON.stringify(result.error)}`;
-    }
-    const content: Array<{ text?: string }> = result.result?.content ?? [];
+    // Extract text from MCP response content array
+    if (result?.structuredContent) return JSON.stringify(result.structuredContent);
+    const content: Array<{ text?: string }> = result?.content ?? [];
     const text = content.map(c => c.text ?? JSON.stringify(c)).join("\n");
-    return text || JSON.stringify(result.result ?? "(no result)");
+    return text || JSON.stringify(result ?? "(no result)");
   } catch (e: any) {
     if (e.response) {
       return `ERROR calling WP Ability: HTTP ${e.response.status} — ${JSON.stringify(e.response.data).slice(0, 500)}`;
     }
-    return `ERROR calling WP Ability ${originalName}: ${e.message}`;
+    return `ERROR calling WP Ability ${abilityName}: ${e.message}`;
   }
 }
 
