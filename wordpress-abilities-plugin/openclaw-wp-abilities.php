@@ -14,7 +14,18 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+add_action( 'wp_ability_categories_init', 'openclaw_register_ability_category' );
 add_action( 'wp_abilities_api_init', 'openclaw_register_abilities' );
+
+function openclaw_register_ability_category(): void {
+    if ( ! function_exists( 'wp_register_ability_category' ) ) {
+        return;
+    }
+    wp_register_ability_category( 'openclaw', array(
+        'label'       => __( 'OpenClaw', 'openclaw' ),
+        'description' => __( 'Custom abilities for the OpenClaw AI agent.', 'openclaw' ),
+    ) );
+}
 
 function openclaw_register_abilities(): void {
     if ( ! function_exists( 'wp_register_ability' ) ) {
@@ -50,7 +61,7 @@ function openclaw_register_abilities(): void {
                 return current_user_can( 'manage_options' );
             },
             'meta' => array(
-                'mcp' => array( 'public' => true ),
+                'show_in_rest' => true,
             ),
         )
     );
@@ -81,7 +92,7 @@ function openclaw_register_abilities(): void {
                 return current_user_can( 'manage_options' );
             },
             'meta' => array(
-                'mcp' => array( 'public' => true ),
+                'show_in_rest' => true,
             ),
         )
     );
