@@ -7,13 +7,14 @@ WordPress AI agent. Streams back the result.
 Features:
   • Text messages  → agent task
   • Voice messages → Whisper transcription → agent task
-  • Photos         → WordPress media library upload (+ optional task if captioned)
+  • Photos         → asks what to do (upload, featured image, blog post, etc.)
+  • GitHub .yaml URL in chat → auto-installs as a custom skill
   • /start         → welcome + feature list
   • /status        → agent health check
   • /model         → show or switch AI model
   • /cancel        → clear conversation history (also cancels active flows)
   • /tasks         → list / cancel scheduled tasks
-  • /skill         → list, create, show, delete, reload custom skills
+  • /skill         → list, create, install (GitHub), show, delete, reload skills
   • /mcp           → list, install, remove, reload MCP tool servers
 """
 
@@ -21,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 
 import requests
@@ -387,9 +389,9 @@ def _auto_select_model(message: str) -> tuple[str, str]:
 # This keeps all routing in one place and doesn't require restructuring handlers.
 
 def _clear_flows(ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clear any active skill-create, skill-delete, or MCP-install flow."""
+    """Clear any active skill-create, skill-delete, MCP-install, or media flow."""
     for key in ("skill_draft", "skill_step", "pending_skill_delete",
-                "mcp_draft", "mcp_step"):
+                "mcp_draft", "mcp_step", "pending_media", "media_step"):
         ctx.user_data.pop(key, None)
 
 def _in_flow(ctx: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -397,6 +399,7 @@ def _in_flow(ctx: ContextTypes.DEFAULT_TYPE) -> bool:
         ctx.user_data.get("skill_step")
         or ctx.user_data.get("pending_skill_delete")
         or ctx.user_data.get("mcp_step")
+        or ctx.user_data.get("media_step")
     )
 
 # ─── Command handlers ─────────────────────────────────────────────────────────
@@ -582,6 +585,76 @@ async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+# ─── GitHub skill helpers ─────────────────────────────────────────────────────
+
+def _github_to_raw(url: str) -> str:
+    """Convert a GitHub blob URL to raw.githubusercontent.com URL."""
+    m = re.match(
+        r"https://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)",
+        url.strip()
+    )
+    if m:
+        user, repo, branch, path = m.groups()
+        return f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{path}"
+    return url.strip()
+
+
+def _is_github_yaml_url(text: str) -> bool:
+    """Return True if text is solely a GitHub URL pointing to a YAML file."""
+    text = text.strip()
+    if " " in text or "\n" in text:
+        return False
+    return bool(re.match(
+        r"https://(?:github\.com/[^/]+/[^/]+/blob/|raw\.githubusercontent\.com/[^/]+/[^/]+/)[^\s]+\.ya?ml$",
+        text
+    ))
+
+
+async def _install_skill_from_url(update: Update, url: str) -> None:
+    """Download a YAML skill from a GitHub URL and install it via the agent."""
+    raw_url = _github_to_raw(url)
+    status_msg = await update.message.reply_text("⬇️ Downloading skill from GitHub…")
+    try:
+        r = requests.get(raw_url, timeout=30)
+        if r.status_code != 200:
+            await status_msg.edit_text(
+                f"❌ Failed to download skill: HTTP {r.status_code}\n`{raw_url}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        yaml_content = r.text
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Download failed: {e}")
+        return
+
+    try:
+        r2 = requests.post(
+            f"{AGENT_URL}/skills",
+            json={"yaml": yaml_content},
+            timeout=15,
+        )
+        data = r2.json()
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error installing skill: {e}")
+        return
+
+    if "error" in data:
+        await status_msg.edit_text(
+            f"❌ Invalid skill YAML:\n`{data['error']}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    name = data.get("name", "?")
+    tool_name = data.get("tool_name", f"skill_{name}")
+    await status_msg.edit_text(
+        f"✅ Skill `{name}` installed from GitHub!\n"
+        f"Tool: `{tool_name}`\n\n"
+        f"Use `/skill show {name}` to inspect it.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 # ─── /skill command ───────────────────────────────────────────────────────────
 
 async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -648,6 +721,21 @@ async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ── install <url> ─────────────────────────────────────────────────────────
+    if sub == "install":
+        if len(args) < 2:
+            await update.message.reply_text(
+                "📦 *Install a skill from GitHub*\n\n"
+                "Usage: `/skill install <github-url>`\n\n"
+                "Or paste a GitHub `.yaml` URL directly in chat — the bot detects it automatically!\n\n"
+                "Example:\n"
+                "`/skill install https://github.com/user/repo/blob/main/my-skill.yaml`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        await _install_skill_from_url(update, args[1])
+        return
+
     # ── create ─────────────────────────────────────────────────────────────────
     if sub == "create":
         _clear_flows(ctx)
@@ -681,9 +769,11 @@ async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"⚙️ *Built-in Tools:*\n{builtin_text}\n\n"
         "Sub-commands:\n"
         "• `/skill create` — guided skill creation\n"
+        "• `/skill install <github-url>` — install from GitHub\n"
         "• `/skill show <name>` — view skill YAML\n"
         "• `/skill delete <name>` — remove a skill\n"
-        "• `/skill reload` — reload from disk",
+        "• `/skill reload` — reload from disk\n\n"
+        "_Tip: paste a GitHub `.yaml` URL directly in chat to auto-install._",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -702,7 +792,6 @@ async def handle_skill_create_step(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     # ── Step 1: name ──────────────────────────────────────────────────────────
     if step == "name":
-        import re
         if not re.match(r"^[a-zA-Z0-9_]+$", text):
             await update.message.reply_text(
                 "❌ Invalid name. Use only letters, numbers, and underscores.\n\nTry again:"
@@ -1277,6 +1366,78 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
                 logger.error(f"Failed to send chunk: {e2}")
 
 
+# ─── Media flow helpers ───────────────────────────────────────────────────────
+
+async def _process_pending_media(
+    update: Update,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    task_description: str,
+) -> None:
+    """Upload the pending photo to the agent, then execute the user's task."""
+    media = ctx.user_data.pop("pending_media", None)
+    ctx.user_data.pop("media_step", None)
+    if not media:
+        return
+
+    status_msg = await update.message.reply_text("📤 Uploading image…")
+    try:
+        r = requests.post(
+            f"{AGENT_URL}/upload",
+            files={"file": (media["filename"], media["bytes"], media["content_type"])},
+            timeout=60,
+        )
+        data = r.json()
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Upload failed: {e}")
+        return
+
+    if "error" in data:
+        await status_msg.edit_text(f"❌ {data['error']}")
+        return
+
+    media_url = data.get("url", "")
+    media_id  = data.get("id", "")
+    await status_msg.delete()
+
+    # Pure "just save it" requests — confirm and stop
+    task_lower = task_description.lower().strip()
+    if task_lower in {
+        "upload", "save", "store", "media library",
+        "upload to wordpress", "save to wordpress",
+        "upload to wordpress media library", "save to library",
+    }:
+        await update.message.reply_text(
+            f"✅ Uploaded to WordPress media library!\n"
+            f"🆔 ID: `{media_id}`\n"
+            f"🔗 {media_url}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Pass to the agent with full media context
+    await update.message.chat.send_action(ChatAction.TYPING)
+    task_text = (
+        f"The user shared an image that was uploaded to WordPress "
+        f"(Media ID: {media_id}, URL: {media_url}). "
+        f"Task: {task_description}"
+    )
+    await _run_agent_task(update, ctx, task_text)
+
+
+async def handle_pending_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    If the user is in the media-waiting state (sent a photo and we asked what to do),
+    consume their text reply and process the pending media.  Returns True if handled.
+    """
+    if ctx.user_data.get("media_step") != "waiting":
+        return False
+    task_description = (update.message.text or "").strip()
+    if not task_description:
+        return False
+    await _process_pending_media(update, ctx, task_description)
+    return True
+
+
 # ─── Message handler ──────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1291,10 +1452,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if await handle_mcp_install_step(update, ctx):
         return
+    if await handle_pending_media(update, ctx):
+        return
 
-    user_text = update.message.text.strip()
+    user_text = (update.message.text or "").strip()
     if not user_text:
         return
+
+    # Auto-detect GitHub YAML URLs and install them as skills
+    if _is_github_yaml_url(user_text):
+        await _install_skill_from_url(update, user_text)
+        return
+
     await update.message.chat.send_action(ChatAction.TYPING)
     await _run_agent_task(update, ctx, user_text)
 
@@ -1351,6 +1520,11 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ─── Photo handler ────────────────────────────────────────────────────────────
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Receive a photo.  Downloads it and holds it in user_data, then asks the
+    user what to do — rather than blindly uploading to WordPress.
+    If the photo has a caption, the caption is used as the task immediately.
+    """
     if not is_admin(update):
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -1358,46 +1532,38 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     photo   = update.message.photo[-1]
     caption = (update.message.caption or "").strip()
 
-    status_msg = await update.message.reply_text("📤 Uploading to WordPress media library…")
-
-    tg_file     = await photo.get_file()
-    photo_bytes = bytes(await tg_file.download_as_bytearray())
-    filename    = f"telegram_{photo.file_id}.jpg"
-
+    status_msg = await update.message.reply_text("📥 Receiving image…")
     try:
-        r = requests.post(
-            f"{AGENT_URL}/upload",
-            files={"file": (filename, photo_bytes, "image/jpeg")},
-            timeout=60,
-        )
-        data = r.json()
+        tg_file     = await photo.get_file()
+        photo_bytes = bytes(await tg_file.download_as_bytearray())
     except Exception as e:
-        await status_msg.edit_text(f"❌ Upload failed: {e}")
+        await status_msg.edit_text(f"❌ Failed to download image: {e}")
         return
-
-    if "error" in data:
-        await status_msg.edit_text(f"❌ {data['error']}")
-        return
-
-    media_url = data.get("url", "")
-    media_id  = data.get("id", "")
-
-    if not caption:
-        await status_msg.edit_text(
-            f"✅ Uploaded to WordPress media library!\n"
-            f"🆔 ID: `{media_id}`\n"
-            f"🔗 {media_url}",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
     await status_msg.delete()
-    task_text = (
-        f"A photo was just uploaded to the WordPress media library "
-        f"(ID: {media_id}, URL: {media_url}). {caption}"
+
+    # Hold the image in user_data until the user tells us what to do with it
+    ctx.user_data["pending_media"] = {
+        "bytes":        photo_bytes,
+        "filename":     f"telegram_{photo.file_id}.jpg",
+        "content_type": "image/jpeg",
+    }
+    ctx.user_data["media_step"] = "waiting"
+
+    if caption:
+        # Caption = instant instructions — process right away
+        await _process_pending_media(update, ctx, caption)
+        return
+
+    await update.message.reply_text(
+        "📸 Got your image! What would you like to do with it?\n\n"
+        "• _Upload to WordPress media library_\n"
+        "• _Set as featured image for a new post_\n"
+        "• _Use in a blog post about..._\n"
+        "• _Analyse and describe it_\n"
+        "• _Any other task_\n\n"
+        "Just describe what you want, or type `/cancel` to discard.",
+        parse_mode=ParseMode.MARKDOWN,
     )
-    await update.message.chat.send_action(ChatAction.TYPING)
-    await _run_agent_task(update, ctx, task_text)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -1409,7 +1575,7 @@ async def post_init(app: Application) -> None:
         BotCommand("model",  "Show or switch AI model"),
         BotCommand("cancel", "Clear history / cancel active flow"),
         BotCommand("tasks",  "List or cancel scheduled tasks"),
-        BotCommand("skill",  "List, create, delete, reload custom skills"),
+        BotCommand("skill",  "List, create, install (GitHub), delete custom skills"),
         BotCommand("mcp",    "Install, list, remove MCP tool servers"),
     ])
     logger.info("Bot commands registered with Telegram.")
