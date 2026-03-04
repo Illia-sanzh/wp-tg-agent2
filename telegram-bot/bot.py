@@ -389,9 +389,10 @@ def _auto_select_model(message: str) -> tuple[str, str]:
 # This keeps all routing in one place and doesn't require restructuring handlers.
 
 def _clear_flows(ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clear any active skill-create, skill-delete, MCP-install, or media flow."""
+    """Clear any active skill-create, skill-delete, MCP-install, media, or browse flow."""
     for key in ("skill_draft", "skill_step", "pending_skill_delete",
-                "mcp_draft", "mcp_step", "pending_media", "media_step"):
+                "mcp_draft", "mcp_step", "pending_media", "media_step",
+                "skill_browse_step", "skill_browse_files", "skill_browse_repo"):
         ctx.user_data.pop(key, None)
 
 def _in_flow(ctx: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -400,6 +401,7 @@ def _in_flow(ctx: ContextTypes.DEFAULT_TYPE) -> bool:
         or ctx.user_data.get("pending_skill_delete")
         or ctx.user_data.get("mcp_step")
         or ctx.user_data.get("media_step")
+        or ctx.user_data.get("skill_browse_step")
     )
 
 # ─── Command handlers ─────────────────────────────────────────────────────────
@@ -655,6 +657,222 @@ async def _install_skill_from_url(update: Update, url: str) -> None:
     )
 
 
+# ─── GitHub repo/directory browsing ──────────────────────────────────────────
+
+def _parse_github_repo_url(url: str) -> dict | None:
+    """
+    Parse a GitHub repo or tree URL.
+    Returns {"owner", "repo", "branch", "path"} or None if it doesn't match.
+    Does NOT match direct file URLs (/blob/ or raw.githubusercontent.com).
+    """
+    url = url.strip().rstrip("/")
+    # Bare repo root: https://github.com/owner/repo
+    m = re.match(r"https://github\.com/([^/]+)/([^/?#]+)$", url)
+    if m:
+        return {"owner": m.group(1), "repo": m.group(2), "branch": "", "path": ""}
+    # Tree URL: https://github.com/owner/repo/tree/branch[/path]
+    m = re.match(r"https://github\.com/([^/]+)/([^/]+)/tree/([^/]+)(?:/(.+))?$", url)
+    if m:
+        return {"owner": m.group(1), "repo": m.group(2),
+                "branch": m.group(3), "path": m.group(4) or ""}
+    return None
+
+
+def _is_github_repo_url(text: str) -> bool:
+    """Return True if text is solely a GitHub repo or tree URL (not a direct file)."""
+    text = text.strip()
+    if " " in text or "\n" in text:
+        return False
+    return _parse_github_repo_url(text) is not None
+
+
+def _list_github_yaml_files(owner: str, repo: str, branch: str,
+                             path_prefix: str) -> tuple[list[str], str, str]:
+    """
+    Return (yaml_paths, warning_message, resolved_branch) for all .yaml/.yml
+    files in the repo under path_prefix, using the GitHub recursive trees API.
+    """
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "openclaw-bot/1.0",
+    }
+
+    # Resolve default branch if caller didn't supply one
+    if not branch:
+        r = requests.get(
+            f"https://api.github.com/repos/{owner}/{repo}",
+            headers=headers, timeout=15,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code} fetching repo info")
+        branch = r.json().get("default_branch", "main")
+
+    r = requests.get(
+        f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1",
+        headers=headers, timeout=25,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} from GitHub API")
+
+    data      = r.json()
+    tree      = data.get("tree", [])
+    truncated = data.get("truncated", False)
+
+    prefix = (path_prefix.rstrip("/") + "/") if path_prefix else ""
+    yaml_files = sorted(
+        item["path"] for item in tree
+        if item.get("type") == "blob"
+        and item["path"].lower().endswith((".yaml", ".yml"))
+        and (not prefix or item["path"].startswith(prefix))
+    )
+
+    warn = ("_(Note: repo has too many files; list may be incomplete)_"
+            if truncated else "")
+    return yaml_files, warn, branch
+
+
+async def _browse_github_skills(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+                                 repo_info: dict) -> None:
+    """Fetch YAML file list from a GitHub repo and show a numbered menu."""
+    owner  = repo_info["owner"]
+    repo   = repo_info["repo"]
+    branch = repo_info["branch"]
+    path   = repo_info["path"]
+
+    loc = f"`{owner}/{repo}`" + (f"`/{path}`" if path else "")
+    status = await update.message.reply_text(
+        f"🔍 Scanning {loc} for skill files…", parse_mode=ParseMode.MARKDOWN
+    )
+
+    try:
+        files, warn, branch = _list_github_yaml_files(owner, repo, branch, path)
+    except Exception as e:
+        await status.edit_text(f"❌ GitHub API error: {e}")
+        return
+
+    if not files:
+        await status.edit_text(
+            f"❌ No `.yaml`/`.yml` files found in {loc}.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Store browse state (branch is now fully resolved)
+    _clear_flows(ctx)
+    ctx.user_data["skill_browse_repo"]  = {
+        "owner": owner, "repo": repo, "branch": branch,
+    }
+    ctx.user_data["skill_browse_files"] = files
+    ctx.user_data["skill_browse_step"]  = "waiting"
+
+    MAX_SHOWN = 40
+    shown = files[:MAX_SHOWN]
+    lines = [f"📦 Found *{len(files)}* skill file(s) in `{owner}/{repo}`:\n"]
+    for i, f in enumerate(shown, 1):
+        lines.append(f"`{i}.` `{f}`")
+    if len(files) > MAX_SHOWN:
+        lines.append(f"\n_…and {len(files) - MAX_SHOWN} more (first {MAX_SHOWN} shown)_")
+    if warn:
+        lines.append(f"\n{warn}")
+    lines.append(
+        "\nReply with:\n"
+        "• A number — e.g. `3`\n"
+        "• Multiple numbers — e.g. `1 3 5`\n"
+        "• A range — e.g. `2-5`\n"
+        "• `all` — install everything\n"
+        "• `/cancel` to abort"
+    )
+    await status.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_skill_browse_step(update: Update,
+                                    ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle the user's skill-selection reply in the GitHub browse flow."""
+    if ctx.user_data.get("skill_browse_step") != "waiting":
+        return False
+
+    text = (update.message.text or "").strip()
+    if not text:
+        return False
+
+    files      = ctx.user_data.get("skill_browse_files", [])
+    repo_meta  = ctx.user_data.get("skill_browse_repo", {})
+    owner      = repo_meta.get("owner", "")
+    repo_name  = repo_meta.get("repo", "")
+    branch     = repo_meta.get("branch", "main")
+
+    # Parse selection
+    selected: set[int] = set()
+    if text.lower() == "all":
+        selected = set(range(len(files)))
+    else:
+        for token in re.split(r"[\s,]+", text):
+            token = token.strip()
+            if not token:
+                continue
+            m = re.match(r"^(\d+)-(\d+)$", token)
+            if m:
+                lo, hi = int(m.group(1)), int(m.group(2))
+                for i in range(lo, min(hi, len(files)) + 1):
+                    if 1 <= i:
+                        selected.add(i - 1)
+            elif token.isdigit():
+                i = int(token)
+                if 1 <= i <= len(files):
+                    selected.add(i - 1)
+
+    if not selected:
+        await update.message.reply_text(
+            "❓ Please reply with a number, range, or `all`.\n"
+            "Example: `3`, `1 2 5`, `2-4`, `all`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True  # still in flow
+
+    # Clear browse state
+    for k in ("skill_browse_step", "skill_browse_files", "skill_browse_repo"):
+        ctx.user_data.pop(k, None)
+
+    chosen = [files[i] for i in sorted(selected)]
+
+    if len(chosen) == 1:
+        status = await update.message.reply_text(
+            f"⬇️ Installing `{chosen[0]}`…", parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        status = await update.message.reply_text(
+            f"⬇️ Installing {len(chosen)} skill(s)…"
+        )
+
+    results = []
+    for fpath in chosen:
+        raw_url = (
+            f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/{fpath}"
+        )
+        try:
+            r = requests.get(raw_url, timeout=20)
+            if r.status_code != 200:
+                results.append(f"❌ `{fpath}` — HTTP {r.status_code}")
+                continue
+            r2 = requests.post(
+                f"{AGENT_URL}/skills", json={"yaml": r.text}, timeout=15
+            )
+            d = r2.json()
+            if "error" in d:
+                results.append(f"❌ `{fpath}` — {d['error']}")
+            else:
+                name = d.get("name", fpath)
+                results.append(f"✅ `{name}`")
+        except Exception as e:
+            results.append(f"❌ `{fpath}` — {e}")
+
+    await status.edit_text(
+        "📦 Install results:\n\n" + "\n".join(results),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return True
+
+
 # ─── /skill command ───────────────────────────────────────────────────────────
 
 async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -727,13 +945,25 @@ async def cmd_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "📦 *Install a skill from GitHub*\n\n"
                 "Usage: `/skill install <github-url>`\n\n"
-                "Or paste a GitHub `.yaml` URL directly in chat — the bot detects it automatically!\n\n"
-                "Example:\n"
-                "`/skill install https://github.com/user/repo/blob/main/my-skill.yaml`",
+                "Supports:\n"
+                "• Direct file: `.../blob/main/skill.yaml`\n"
+                "• Whole repo: `https://github.com/user/repo`\n"
+                "• Subdirectory: `.../tree/main/subdir`\n\n"
+                "_Tip: paste any GitHub URL directly in chat — the bot detects it automatically!_",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
-        await _install_skill_from_url(update, args[1])
+        url = args[1]
+        if _is_github_yaml_url(url):
+            await _install_skill_from_url(update, url)
+        elif _is_github_repo_url(url):
+            repo_info = _parse_github_repo_url(url)
+            await _browse_github_skills(update, ctx, repo_info)
+        else:
+            await update.message.reply_text(
+                "❌ Unrecognised URL. Please provide a GitHub `.yaml` file link or a repo/directory URL.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
         return
 
     # ── create ─────────────────────────────────────────────────────────────────
@@ -1452,6 +1682,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if await handle_mcp_install_step(update, ctx):
         return
+    if await handle_skill_browse_step(update, ctx):
+        return
     if await handle_pending_media(update, ctx):
         return
 
@@ -1459,9 +1691,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
-    # Auto-detect GitHub YAML URLs and install them as skills
+    # Auto-detect GitHub URLs and handle them without hitting the agent
     if _is_github_yaml_url(user_text):
         await _install_skill_from_url(update, user_text)
+        return
+    if _is_github_repo_url(user_text):
+        repo_info = _parse_github_repo_url(user_text)
+        await _browse_github_skills(update, ctx, repo_info)
         return
 
     await update.message.chat.send_action(ChatAction.TYPING)
