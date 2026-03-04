@@ -949,7 +949,7 @@ function githubToRaw(url: string): string {
 function isGithubSkillFileUrl(text: string): boolean {
   text = text.trim();
   if (/\s/.test(text)) return false;
-  return /^https:\/\/(?:github\.com\/[^/]+\/[^/]+\/blob\/|raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)[^\s]+\.(?:ya?ml|md)$/.test(text);
+  return /^https:\/\/(?:github\.com\/[^/]+\/[^/]+\/blob\/|raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)[^\s]+\.(?:ya?ml|md|js)$/.test(text);
 }
 
 function parseGithubRepoUrl(url: string): { owner: string; repo: string; branch: string; path: string } | null {
@@ -972,31 +972,35 @@ function isGithubRepoUrl(text: string): boolean {
 async function installSkillFromUrl(ctx: MyContext, url: string): Promise<void> {
   const rawUrl = githubToRaw(url);
   const isMd   = /\.md$/i.test(rawUrl);
+  const isJs   = /\.js$/i.test(rawUrl);
   const statusMsg = await ctx.reply("⬇️ Downloading skill from GitHub…");
   try {
     const r = await externalAxios.get(rawUrl, { timeout: 30_000, responseType: "text" });
     if (r.status !== 200) {
       await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
-        `❌ Failed to download skill: HTTP ${r.status}\n\`${rawUrl}\``, { parse_mode: "Markdown" });
+        `❌ Failed to download skill: HTTP ${r.status}`);
       return;
     }
-    const body = isMd
-      ? { markdown: r.data, name: rawUrl.split("/").pop()!.replace(/\.md$/i, "") }
-      : { yaml: r.data };
+    const content = typeof r.data === "string" ? r.data : String(r.data);
+    const fileName = rawUrl.split("/").pop()!;
+    let body: Record<string, string>;
+    if (isJs)       body = { script: content, name: fileName.replace(/\.js$/i, "") };
+    else if (isMd)  body = { markdown: content, name: fileName.replace(/\.md$/i, "") };
+    else            body = { yaml: content };
     const r2 = await agentAxios.post(`${AGENT_URL}/skills`, body, { timeout: 15_000 });
     if (r2.data.error) {
       await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
-        `❌ Invalid skill:\n\`${r2.data.error}\``, { parse_mode: "Markdown" });
+        `❌ Invalid skill: ${r2.data.error}`);
       return;
     }
     const name = r2.data.name ?? "?";
-    const label = isMd ? "knowledge skill" : "tool skill";
+    const label = isJs ? "script tool" : isMd ? "knowledge skill" : "tool skill";
     await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
-      `✅ Skill \`${name}\` installed as ${label}!\n\nUse \`/skill show ${name}\` to inspect it.`,
-      { parse_mode: "Markdown" });
-  } catch (e) {
+      `✅ Skill "${name}" installed as ${label}!`);
+  } catch (e: any) {
+    const detail = e?.response?.data?.error ?? e?.message ?? String(e);
     await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
-      `❌ Download/install failed: ${sanitize(String(e))}`);
+      `❌ Download/install failed: ${sanitize(detail)}`);
   }
 }
 
@@ -1010,6 +1014,8 @@ function isSkillFile(path: string): boolean {
     const basename = lower.split("/").pop()?.replace(/\.md$/, "") ?? "";
     return !EXCLUDED_MD.has(basename);
   }
+  // .js files in scripts/ directories are executable skill scripts
+  if (/\.js$/i.test(lower) && /(?:^|\/|\\)scripts\//i.test(lower)) return true;
   return false;
 }
 
@@ -1144,17 +1150,31 @@ async function handleSkillBrowseStep(ctx: MyContext): Promise<boolean> {
       if (r.status !== 200) { results.push(`❌ \`${fpath}\` — HTTP ${r.status}`); continue; }
 
       const isMd = /\.md$/i.test(fpath);
-      const body = isMd
-        ? { markdown: r.data, name: fpath.split("/").pop()!.replace(/\.md$/i, "") }
-        : { yaml: r.data };
+      const isJs = /\.js$/i.test(fpath);
+      const content = typeof r.data === "string" ? r.data : String(r.data);
+      const fileName = fpath.split("/").pop()!;
+      let body: Record<string, string>;
+      if (isJs)       body = { script: content, name: fileName.replace(/\.js$/i, "") };
+      else if (isMd)  body = { markdown: content, name: fileName.replace(/\.md$/i, "") };
+      else            body = { yaml: content };
       const r2 = await agentAxios.post(`${AGENT_URL}/skills`, body, { timeout: 15_000 });
-      if (r2.data.error) { results.push(`❌ \`${fpath}\` — ${r2.data.error}`); }
-      else { results.push(`✅ \`${r2.data.name ?? fpath}\`${isMd ? " _(knowledge)_" : ""}`); }
-    } catch (e) { results.push(`❌ \`${fpath}\` — ${sanitize(String(e))}`); }
+      if (r2.data.error) { results.push(`❌ ${fpath} — ${r2.data.error}`); }
+      else {
+        const label = isJs ? " (script tool)" : isMd ? " (knowledge)" : "";
+        results.push(`✅ ${r2.data.name ?? fpath}${label}`);
+      }
+    } catch (e: any) {
+      const detail = e?.response?.data?.error ?? e?.message ?? String(e);
+      results.push(`❌ ${fpath} — ${sanitize(detail)}`);
+    }
   }
 
-  await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
-    "📦 Install results:\n\n" + results.join("\n"), { parse_mode: "Markdown" });
+  try {
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+      "📦 Install results:\n\n" + results.join("\n"));
+  } catch {
+    await ctx.reply("📦 Install results:\n\n" + results.join("\n"));
+  }
   return true;
 }
 
@@ -1204,7 +1224,7 @@ bot.command(["skill", "skills"], async ctx => {
         "📦 *Install a skill from GitHub*\n\n" +
         "Usage: `/skill install <github-url>`\n\n" +
         "Supports:\n" +
-        "• Direct file: `.../blob/main/skill.yaml`\n" +
+        "• Direct file: `.../blob/main/skill.yaml` or `.md` or `.js`\n" +
         "• Whole repo: `https://github.com/user/repo`\n" +
         "• Subdirectory: `.../tree/main/subdir`\n\n" +
         "_Tip: paste any GitHub URL directly in chat — the bot detects it automatically!_",
@@ -1226,24 +1246,16 @@ bot.command(["skill", "skills"], async ctx => {
   }
 
   if (sub === "create") {
+    console.log("[bot] /skill create: entering create flow");
     ctx.session.skillDraft = {};
     ctx.session.skillStep  = "name";
-    try {
-      await ctx.reply(
-        "🛠️ *Create a new skill — Step 1/5*\n\n" +
-        "What is the skill *name*?\n" +
-        "Alphanumeric + underscores only, e.g. `check_ssl`\n\n" +
-        "Type /cancel at any time to abort.",
-        { parse_mode: "Markdown" },
-      );
-    } catch {
-      await ctx.reply(
-        "🛠️ Create a new skill — Step 1/5\n\n" +
-        "What is the skill name?\n" +
-        "Alphanumeric + underscores only, e.g. check_ssl\n\n" +
-        "Type /cancel at any time to abort.",
-      );
-    }
+    await ctx.reply(
+      "Create a new skill — Step 1/5\n\n" +
+      "What is the skill name?\n" +
+      "Alphanumeric + underscores only, e.g. check_ssl\n\n" +
+      "Type /cancel at any time to abort.",
+    );
+    console.log("[bot] /skill create: reply sent successfully");
     return;
   }
 
@@ -1256,9 +1268,14 @@ bot.command(["skill", "skills"], async ctx => {
     const mdText  = mdSkills.length
       ? mdSkills.map((n: string) => `• \`${n}\` _(knowledge)_`).join("\n")
       : "_(none)_";
+    const scriptSkills = (r.data.scripts ?? []) as string[];
+    const scriptText = scriptSkills.length
+      ? scriptSkills.map((n: string) => `• \`${n}\` _(script)_`).join("\n")
+      : "_(none)_";
     await ctx.reply(
       `🔌 *Custom Skills (tools):*\n${custom}\n\n` +
       `📚 *Knowledge Skills:*\n${mdText}\n\n` +
+      `📜 *Script Skills:*\n${scriptText}\n\n` +
       `⚙️ *Built-in Tools:*\n${builtin}\n\n` +
       "Sub-commands:\n• `/skill create` — guided skill creation\n• `/skill install <github-url>` — install from GitHub\n• `/skill show <name>` — view skill content\n• `/skill delete <name>` — remove a skill\n• `/skill reload` — reload from disk\n\n" +
       "_Tip: paste a GitHub skill URL directly in chat to auto-install._",

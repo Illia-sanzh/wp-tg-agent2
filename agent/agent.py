@@ -1117,13 +1117,16 @@ def cancel_schedule(job_id: str):
 
 @app.get("/skills")
 def list_skills_endpoint():
-    """Return names of all available tools (built-in + custom + markdown skills)."""
+    """Return names of all available tools (built-in + custom + markdown + script skills)."""
     md_names = sorted(f.stem for f in SKILLS_DIR.glob("*.md")) if SKILLS_DIR.exists() else []
+    scripts_dir = SKILLS_DIR / "scripts"
+    script_names = sorted(f.stem for f in scripts_dir.glob("*.js")) if scripts_dir.exists() else []
     return jsonify({
         "builtin":  [t["function"]["name"] for t in TOOLS],
         "custom":   [t["function"]["name"] for t in _cached_custom_tools],
         "markdown": md_names,
-        "count":    len(TOOLS) + len(_cached_custom_tools) + len(md_names),
+        "scripts":  script_names,
+        "count":    len(TOOLS) + len(_cached_custom_tools) + len(md_names) + len(script_names),
     })
 
 
@@ -1223,11 +1226,14 @@ def get_skill(name: str):
 def create_skill():
     """Create or replace a custom skill from YAML or Markdown."""
     global _cached_custom_tools, _cached_markdown_skills
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(force=True, silent=True) or {}
+    app.logger.info(f"POST /skills body keys={list(body.keys())}, "
+                    f"markdown type={type(body.get('markdown')).__name__}, "
+                    f"name={body.get('name')!r}")
 
     # ── Markdown skill (knowledge document) ──────────────────────────────
-    md_content = body.get("markdown", "").strip()
-    md_name    = body.get("name", "").strip()
+    md_content = str(body.get("markdown", "")).strip()
+    md_name    = str(body.get("name", "")).strip()
     if md_content:
         if not md_name:
             return jsonify({"error": "Markdown skills require a 'name' field"}), 400
@@ -1245,10 +1251,47 @@ def create_skill():
             "file":   skill_path.name,
         })
 
+    # ── JavaScript script skill (auto-wrapped as command tool) ──────────
+    script_content = str(body.get("script", "")).strip()
+    script_name    = str(body.get("name", "")).strip()
+    if script_content and script_name:
+        if not re.match(r"^[a-zA-Z0-9_-]+$", script_name):
+            return jsonify({"error": "Name must be alphanumeric (plus _ and -)"}), 400
+        scripts_dir = SKILLS_DIR / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        js_path = scripts_dir / f"{script_name}.js"
+        js_path.write_text(script_content)
+        # Auto-generate a companion YAML skill so the agent can call it as a tool
+        companion_yaml = {
+            "name": script_name,
+            "type": "command",
+            "description": f"Run the {script_name}.js script. Accepts an input file path. "
+                           "For HTML-to-block conversion, write HTML to a temp file first, "
+                           "then pass the file path. Output is the converted result.",
+            "command": f"node /app/config/skills/scripts/{script_name}.js {{input_file}}",
+            "parameters": [{
+                "name": "input_file",
+                "description": "Path to the input file (e.g. /tmp/input.html)",
+                "type": "string",
+                "required": True,
+            }],
+        }
+        yaml_path = SKILLS_DIR / f"{script_name}.yaml"
+        yaml_path.write_text(yaml.dump(companion_yaml, default_flow_style=False))
+        _cached_custom_tools = load_custom_skills()
+        app.logger.info(f"Script skill created: {script_name} (js + yaml wrapper)")
+        return jsonify({
+            "status":    "created",
+            "name":      script_name,
+            "type":      "script",
+            "tool_name": f"skill_{script_name}",
+            "file":      js_path.name,
+        })
+
     # ── YAML skill (callable tool) ───────────────────────────────────────
-    raw = body.get("yaml", "").strip()
+    raw = str(body.get("yaml", "")).strip()
     if not raw:
-        return jsonify({"error": "Request body must include 'yaml' or 'markdown' field"}), 400
+        return jsonify({"error": "Request body must include 'yaml', 'markdown', or 'script' field"}), 400
 
     result = validate_skill_yaml(raw)
     if isinstance(result, str):
@@ -1280,7 +1323,18 @@ def delete_skill(name: str):
     if not SKILLS_DIR.exists():
         return jsonify({"error": "Skills directory not found"}), 404
 
-    # Check for markdown skill first
+    # Check for script skill first (js + companion yaml)
+    js_path = SKILLS_DIR / "scripts" / f"{name}.js"
+    if js_path.exists():
+        js_path.unlink()
+        companion = SKILLS_DIR / f"{name}.yaml"
+        if companion.exists():
+            companion.unlink()
+        _cached_custom_tools = load_custom_skills()
+        app.logger.info(f"Script skill deleted: {name}")
+        return jsonify({"status": "deleted", "name": name})
+
+    # Check for markdown skill
     md_path = SKILLS_DIR / f"{name}.md"
     if md_path.exists():
         md_path.unlink()
