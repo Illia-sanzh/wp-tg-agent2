@@ -415,6 +415,29 @@ function loadCustomSkills(): OpenAI.Chat.ChatCompletionTool[] {
 
 let cachedCustomTools: OpenAI.Chat.ChatCompletionTool[] = [];
 
+// ─── Markdown knowledge skills ───────────────────────────────────────────────
+
+function loadMarkdownSkills(): string {
+  if (!fs.existsSync(SKILLS_DIR)) return "";
+  const parts: string[] = [];
+  try {
+    for (const file of fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith(".md")).sort()) {
+      try {
+        const content = fs.readFileSync(path.join(SKILLS_DIR, file), "utf8").trim();
+        if (content) parts.push(`### Skill: ${file.replace(/\.md$/, "")}\n\n${content}`);
+      } catch (e) { console.warn(`[skills] Failed to load markdown ${file}: ${e}`); }
+    }
+  } catch {}
+  return parts.join("\n\n---\n\n");
+}
+
+let cachedMarkdownSkills = "";
+
+function fullSystemPrompt(): string {
+  if (!cachedMarkdownSkills) return SYSTEM_PROMPT;
+  return SYSTEM_PROMPT + "\n\n## Installed Knowledge Skills\n\n" + cachedMarkdownSkills;
+}
+
 // ─── MCP tool loader ──────────────────────────────────────────────────────────
 
 const MCP_RUNNER_URL = "http://openclaw-mcp-runner:9000";
@@ -953,13 +976,13 @@ async function* runAgent(
         tools:       allTools,
         tool_choice: "auto",
         // @ts-ignore — LiteLLM extension: system passed as extra field
-        system:      SYSTEM_PROMPT,
+        system:      fullSystemPrompt(),
         max_tokens:  4096,
       } as any);
     } catch (firstErr: any) {
       // Some providers don't accept the non-standard 'system' kwarg; prepend it
       if (firstErr?.message?.includes("system") && !systemInjected) {
-        messages.unshift({ role: "system", content: SYSTEM_PROMPT });
+        messages.unshift({ role: "system", content: fullSystemPrompt() });
         systemInjected = true;
         try {
           response = await client.chat.completions.create({
@@ -1110,16 +1133,24 @@ expressApp.delete("/schedules/:jobId", (req, res) => {
 });
 
 expressApp.get("/skills", (_req, res) => {
+  let mdNames: string[] = [];
+  try { mdNames = fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith(".md")).map(f => f.replace(/\.md$/, "")).sort(); } catch {}
+  const scriptsDir = path.join(SKILLS_DIR, "scripts");
+  let scriptNames: string[] = [];
+  try { scriptNames = fs.readdirSync(scriptsDir).filter(f => f.endsWith(".js")).map(f => f.replace(/\.js$/, "")).sort(); } catch {}
   res.json({
-    builtin: TOOLS.map(t => t.function.name),
-    custom:  cachedCustomTools.map(t => t.function.name),
-    count:   TOOLS.length + cachedCustomTools.length,
+    builtin:  TOOLS.map(t => t.function.name),
+    custom:   cachedCustomTools.map(t => t.function.name),
+    markdown: mdNames,
+    scripts:  scriptNames,
+    count:    TOOLS.length + cachedCustomTools.length + mdNames.length + scriptNames.length,
   });
 });
 
 expressApp.post("/reload-skills", (_req, res) => {
   const oldCount    = cachedCustomTools.length;
   cachedCustomTools = loadCustomSkills();
+  cachedMarkdownSkills = loadMarkdownSkills();
   res.json({ loaded: cachedCustomTools.length, previous: oldCount, skills: cachedCustomTools.map(t => t.function.name) });
 });
 
@@ -1163,22 +1194,82 @@ function validateSkillYaml(raw: string): Record<string, any> | string {
 
 expressApp.get("/skills/:name", (req, res) => {
   const { name } = req.params;
-  if (!/^[a-zA-Z0-9_]+$/.test(name)) { res.status(400).json({ error: "Invalid skill name" }); return; }
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) { res.status(400).json({ error: "Invalid skill name" }); return; }
   if (!fs.existsSync(SKILLS_DIR))    { res.status(404).json({ error: "Skills directory not found" }); return; }
 
+  // Check script skill
+  const jsPath = path.join(SKILLS_DIR, "scripts", `${name}.js`);
+  if (fs.existsSync(jsPath)) {
+    const content = fs.readFileSync(jsPath, "utf8");
+    res.json({ name, type: "script", content });
+    return;
+  }
+
+  // Check markdown skill
+  const mdPath = path.join(SKILLS_DIR, `${name}.md`);
+  if (fs.existsSync(mdPath)) {
+    const content = fs.readFileSync(mdPath, "utf8");
+    res.json({ name, type: "markdown", content });
+    return;
+  }
+
+  // Check YAML skills
   try {
     for (const file of fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith(".yaml"))) {
       const raw   = fs.readFileSync(path.join(SKILLS_DIR, file), "utf8");
       const skill = yaml.load(raw) as Record<string, any>;
-      if (skill?.name === name) { res.json({ name, yaml: raw }); return; }
+      if (skill?.name === name) { res.json({ name, type: "yaml", yaml: raw }); return; }
     }
   } catch {}
   res.status(404).json({ error: `Skill '${name}' not found` });
 });
 
 expressApp.post("/skills", (req, res) => {
-  const raw = (req.body?.yaml ?? "").trim();
-  if (!raw) { res.status(400).json({ error: "Request body must include 'yaml' field" }); return; }
+  const body = req.body ?? {};
+
+  // ── Markdown skill (knowledge document) ──────────────────────────────
+  const mdContent = String(body.markdown ?? "").trim();
+  const mdName    = String(body.name ?? "").trim();
+  if (mdContent) {
+    if (!mdName) { res.status(400).json({ error: "Markdown skills require a 'name' field" }); return; }
+    if (!/^[a-zA-Z0-9_-]+$/.test(mdName)) { res.status(400).json({ error: "Name must be alphanumeric (plus _ and -)" }); return; }
+    fs.mkdirSync(SKILLS_DIR, { recursive: true });
+    const filePath = path.join(SKILLS_DIR, `${mdName}.md`);
+    fs.writeFileSync(filePath, mdContent);
+    cachedMarkdownSkills = loadMarkdownSkills();
+    console.log(`[skills] Markdown skill created/updated: ${mdName}`);
+    res.json({ status: "created", name: mdName, type: "markdown", file: `${mdName}.md` });
+    return;
+  }
+
+  // ── JavaScript script skill (auto-wrapped as command tool) ──────────
+  const scriptContent = String(body.script ?? "").trim();
+  const scriptName    = String(body.name ?? "").trim();
+  if (scriptContent && scriptName) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(scriptName)) { res.status(400).json({ error: "Name must be alphanumeric (plus _ and -)" }); return; }
+    const scriptsDir = path.join(SKILLS_DIR, "scripts");
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.writeFileSync(path.join(scriptsDir, `${scriptName}.js`), scriptContent);
+    // Auto-generate companion YAML tool
+    const companionYaml = yaml.dump({
+      name: scriptName,
+      type: "command",
+      description: `Run the ${scriptName}.js script. Accepts an input file path. `
+        + "For HTML-to-block conversion, write HTML to a temp file first, "
+        + "then pass the file path. Output is the converted result.",
+      command: `node /app/config/skills/scripts/${scriptName}.js {input_file}`,
+      parameters: [{ name: "input_file", description: "Path to the input file (e.g. /tmp/input.html)", type: "string", required: true }],
+    });
+    fs.writeFileSync(path.join(SKILLS_DIR, `${scriptName}.yaml`), companionYaml);
+    cachedCustomTools = loadCustomSkills();
+    console.log(`[skills] Script skill created: ${scriptName} (js + yaml wrapper)`);
+    res.json({ status: "created", name: scriptName, type: "script", tool_name: `skill_${scriptName}`, file: `${scriptName}.js` });
+    return;
+  }
+
+  // ── YAML skill (callable tool) ───────────────────────────────────────
+  const raw = String(body.yaml ?? "").trim();
+  if (!raw) { res.status(400).json({ error: "Request body must include 'yaml', 'markdown', or 'script' field" }); return; }
 
   const result = validateSkillYaml(raw);
   if (typeof result === "string") { res.status(400).json({ error: result }); return; }
@@ -1193,10 +1284,33 @@ expressApp.post("/skills", (req, res) => {
 
 expressApp.delete("/skills/:name", (req, res) => {
   const { name } = req.params;
-  if (!/^[a-zA-Z0-9_]+$/.test(name)) { res.status(400).json({ error: "Invalid skill name" }); return; }
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) { res.status(400).json({ error: "Invalid skill name" }); return; }
   if (!fs.existsSync(SKILLS_DIR))    { res.status(404).json({ error: "Skills directory not found" }); return; }
 
   try {
+    // Check for script skill (js + companion yaml)
+    const jsPath = path.join(SKILLS_DIR, "scripts", `${name}.js`);
+    if (fs.existsSync(jsPath)) {
+      fs.unlinkSync(jsPath);
+      const companion = path.join(SKILLS_DIR, `${name}.yaml`);
+      if (fs.existsSync(companion)) fs.unlinkSync(companion);
+      cachedCustomTools = loadCustomSkills();
+      console.log(`[skills] Script skill deleted: ${name}`);
+      res.json({ status: "deleted", name });
+      return;
+    }
+
+    // Check for markdown skill
+    const mdPath = path.join(SKILLS_DIR, `${name}.md`);
+    if (fs.existsSync(mdPath)) {
+      fs.unlinkSync(mdPath);
+      cachedMarkdownSkills = loadMarkdownSkills();
+      console.log(`[skills] Markdown skill deleted: ${name}`);
+      res.json({ status: "deleted", name });
+      return;
+    }
+
+    // Check YAML skills
     let found: string | null = null;
     for (const file of fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith(".yaml"))) {
       const s = yaml.load(fs.readFileSync(path.join(SKILLS_DIR, file), "utf8")) as Record<string, any>;
@@ -1261,6 +1375,9 @@ expressApp.post("/reload-wp-abilities", async (_req, res) => {
 async function main(): Promise<void> {
   cachedCustomTools = loadCustomSkills();
   console.log(`[agent] Custom skills loaded: ${cachedCustomTools.length}`);
+
+  cachedMarkdownSkills = loadMarkdownSkills();
+  console.log(`[agent] Markdown knowledge loaded: ${cachedMarkdownSkills.length} chars`);
 
   cachedMcpTools = await loadMcpTools();
   console.log(`[agent] MCP tools loaded: ${cachedMcpTools.length}`);
