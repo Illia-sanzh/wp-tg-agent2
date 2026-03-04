@@ -1159,6 +1159,8 @@ async function handleSkillBrowseStep(ctx: MyContext): Promise<boolean> {
 
 bot.command(["skill", "skills"], async ctx => {
   if (!isAdmin(ctx)) return;
+  // Any /skill subcommand cancels an active flow (create, browse, media, etc.)
+  clearFlows(ctx);
   const args = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
   const sub  = (args[0] ?? "").toLowerCase();
 
@@ -1340,13 +1342,13 @@ async function handleSkillCreateStep(ctx: MyContext): Promise<boolean> {
       return true;
     }
     const rawYaml = yaml.dump(draft, { noRefs: true }) as string;
+    clearFlows(ctx);  // Always clear — whether success or failure
     try {
       const r = await agentAxios.post(`${AGENT_URL}/skills`, { yaml: rawYaml }, { timeout: 15000 });
       if (r.data.error) {
         await ctx.reply(`❌ Failed to create skill:\n${r.data.error}`);
       } else {
         const name = r.data.name ?? draft.name ?? "?";
-        clearFlows(ctx);
         await ctx.reply(`✅ Skill \`${name}\` created! The agent can now use it immediately.`, { parse_mode: "Markdown" });
       }
     } catch (e) { await ctx.reply(`❌ Error saving skill: ${e}`); }
