@@ -776,6 +776,9 @@ const bot = new Bot<MyContext>(TELEGRAM_BOT_TOKEN, {
 });
 
 bot.use(session({ initial: (): SessionData => ({}) }));
+bot.catch((err) => {
+  console.error("[bot] Unhandled error:", err.message ?? err);
+});
 bot.command("start", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
   await ctx.reply(
@@ -1161,8 +1164,10 @@ bot.command(["skill", "skills"], async ctx => {
   if (!isAdmin(ctx)) return;
   // Any /skill subcommand cancels an active flow (create, browse, media, etc.)
   clearFlows(ctx);
-  const args = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
+  const rawMatch = ctx.match ?? "";
+  const args = rawMatch.trim().split(/\s+/).filter(Boolean);
   const sub  = (args[0] ?? "").toLowerCase();
+  console.log(`[bot] /skill command: match="${rawMatch}" sub="${sub}" args=${JSON.stringify(args)}`);
 
   if (sub === "reload") {
     try {
@@ -1221,14 +1226,24 @@ bot.command(["skill", "skills"], async ctx => {
   }
 
   if (sub === "create") {
-    clearFlows(ctx);
     ctx.session.skillDraft = {};
     ctx.session.skillStep  = "name";
-    await ctx.reply(
-      "🛠️ *Create a new skill* — Step 1/5\n\n" +
-      "What is the skill *name*?\n_(alphanumeric + underscores only, e.g. `check_ssl`)_\n\nType `/cancel` at any time to abort.",
-      { parse_mode: "Markdown" },
-    );
+    try {
+      await ctx.reply(
+        "🛠️ *Create a new skill — Step 1/5*\n\n" +
+        "What is the skill *name*?\n" +
+        "Alphanumeric + underscores only, e.g. `check_ssl`\n\n" +
+        "Type /cancel at any time to abort.",
+        { parse_mode: "Markdown" },
+      );
+    } catch {
+      await ctx.reply(
+        "🛠️ Create a new skill — Step 1/5\n\n" +
+        "What is the skill name?\n" +
+        "Alphanumeric + underscores only, e.g. check_ssl\n\n" +
+        "Type /cancel at any time to abort.",
+      );
+    }
     return;
   }
 
@@ -1256,6 +1271,7 @@ async function handleSkillCreateStep(ctx: MyContext): Promise<boolean> {
   const draft = ctx.session.skillDraft ?? {};
   const text  = ctx.message?.text?.trim() ?? "";
   if (!step) return false;
+  console.log(`[bot] handleSkillCreateStep: step="${step}" text="${text.slice(0, 50)}"`);
 
   if (step === "name") {
     if (!/^[a-zA-Z0-9_]+$/.test(text)) {
