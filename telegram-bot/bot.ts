@@ -764,6 +764,11 @@ function isAdmin(ctx: MyContext): boolean {
   return ADMIN_USER_IDS.has(ctx.from?.id ?? 0);
 }
 const agentAxios = axios.create({ proxy: false });
+// Proxy-aware client for external requests (GitHub API, raw content, etc.)
+const externalAxios = axios.create({
+  proxy: false,
+  ...(HTTPS_PROXY ? { httpsAgent: new HttpsProxyAgent(HTTPS_PROXY) } : {}),
+});
 const bot = new Bot<MyContext>(TELEGRAM_BOT_TOKEN, {
   client: HTTPS_PROXY
     ? { baseFetchConfig: { agent: new HttpsProxyAgent(HTTPS_PROXY) } }
@@ -965,7 +970,7 @@ async function installSkillFromUrl(ctx: MyContext, url: string): Promise<void> {
   const rawUrl = githubToRaw(url);
   const statusMsg = await ctx.reply("⬇️ Downloading skill from GitHub…");
   try {
-    const r = await agentAxios.get(rawUrl, { timeout: 30_000, responseType: "text" });
+    const r = await externalAxios.get(rawUrl, { timeout: 30_000, responseType: "text" });
     if (r.status !== 200) {
       await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
         `❌ Failed to download skill: HTTP ${r.status}\n\`${rawUrl}\``, { parse_mode: "Markdown" });
@@ -996,12 +1001,12 @@ async function listGithubYamlFiles(
 
   // Resolve default branch if not known
   if (!branch) {
-    const r = await agentAxios.get(`https://api.github.com/repos/${owner}/${repo}`, { headers, timeout: 15_000 });
+    const r = await externalAxios.get(`https://api.github.com/repos/${owner}/${repo}`, { headers, timeout: 15_000 });
     if (r.status !== 200) throw new Error(`HTTP ${r.status} fetching repo info`);
     branch = r.data.default_branch ?? "main";
   }
 
-  const r = await agentAxios.get(
+  const r = await externalAxios.get(
     `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
     { headers, timeout: 25_000 },
   );
@@ -1116,7 +1121,7 @@ async function handleSkillBrowseStep(ctx: MyContext): Promise<boolean> {
   for (const fpath of chosen) {
     const rawUrl = `https://raw.githubusercontent.com/${repoMeta.owner}/${repoMeta.repo}/${repoMeta.branch}/${fpath}`;
     try {
-      const r = await agentAxios.get(rawUrl, { timeout: 20_000, responseType: "text" });
+      const r = await externalAxios.get(rawUrl, { timeout: 20_000, responseType: "text" });
       if (r.status !== 200) { results.push(`❌ \`${fpath}\` — HTTP ${r.status}`); continue; }
       const r2 = await agentAxios.post(`${AGENT_URL}/skills`, { yaml: r.data }, { timeout: 15_000 });
       if (r2.data.error) { results.push(`❌ \`${fpath}\` — ${r2.data.error}`); }
