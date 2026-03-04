@@ -38,6 +38,15 @@ interface SessionData {
   pendingSkillDelete?:  string;
   mcpStep?:             string;
   mcpDraft?:            Record<string, any>;
+  // Media flow — hold image until user says what to do
+  pendingMedia?:        { bytes: number[]; filename: string; contentType: string };
+  mediaStep?:           string;
+  // GitHub repo browse flow
+  skillBrowseStep?:     string;
+  skillBrowseFiles?:    string[];
+  skillBrowseRepo?:     { owner: string; repo: string; branch: string };
+  // Stop signal for running agent tasks
+  stopRequested?:       boolean;
 }
 
 type MyContext = Context & SessionFlavor<SessionData>;
@@ -740,10 +749,16 @@ function clearFlows(ctx: MyContext): void {
   delete ctx.session.pendingSkillDelete;
   delete ctx.session.mcpDraft;
   delete ctx.session.mcpStep;
+  delete ctx.session.pendingMedia;
+  delete ctx.session.mediaStep;
+  delete ctx.session.skillBrowseStep;
+  delete ctx.session.skillBrowseFiles;
+  delete ctx.session.skillBrowseRepo;
 }
 
 function inFlow(ctx: MyContext): boolean {
-  return !!(ctx.session.skillStep || ctx.session.pendingSkillDelete || ctx.session.mcpStep);
+  return !!(ctx.session.skillStep || ctx.session.pendingSkillDelete
+    || ctx.session.mcpStep || ctx.session.mediaStep || ctx.session.skillBrowseStep);
 }
 function isAdmin(ctx: MyContext): boolean {
   return ADMIN_USER_IDS.has(ctx.from?.id ?? 0);
@@ -773,7 +788,8 @@ bot.command("start", async ctx => {
     "`/tasks`   — list or cancel scheduled tasks\n" +
     "`/skill`   — manage custom skills\n" +
     "`/mcp`     — manage MCP tool servers\n" +
-    "`/cancel`  — cancel current task & clear history",
+    "`/stop`    — abort current AI request\n" +
+    "`/cancel`  — clear history & cancel flows",
     { parse_mode: "MarkdownV2" },
   );
 });
@@ -864,10 +880,16 @@ bot.command("cancel", async ctx => {
   if (!isAdmin(ctx)) return;
   const wasInFlow = inFlow(ctx);
   clearFlows(ctx);
+  ctx.session.stopRequested = true;
   delete ctx.session.history;
   await ctx.reply(wasInFlow
     ? "🛑 Flow cancelled and conversation history cleared."
     : "🛑 Task cancelled and conversation history cleared.");
+});
+bot.command("stop", async ctx => {
+  if (!isAdmin(ctx)) return;
+  ctx.session.stopRequested = true;
+  await ctx.reply("🛑 Stopping current request…");
 });
 bot.command("tasks", async ctx => {
   if (!isAdmin(ctx)) return;
@@ -908,7 +930,208 @@ bot.command("tasks", async ctx => {
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   } catch (e) { await ctx.reply(`❌ Error fetching schedules: ${e}`); }
 });
-bot.command("skill", async ctx => {
+// ─── GitHub skill helpers ──────────────────────────────────────────────────
+
+function githubToRaw(url: string): string {
+  const m = url.trim().match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/);
+  if (m) return `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
+  return url.trim();
+}
+
+function isGithubYamlUrl(text: string): boolean {
+  text = text.trim();
+  if (/\s/.test(text)) return false;
+  return /^https:\/\/(?:github\.com\/[^/]+\/[^/]+\/blob\/|raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)[^\s]+\.ya?ml$/.test(text);
+}
+
+function parseGithubRepoUrl(url: string): { owner: string; repo: string; branch: string; path: string } | null {
+  url = url.trim().replace(/\/+$/, "");
+  // Bare repo: https://github.com/owner/repo
+  let m = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/?#]+)$/);
+  if (m) return { owner: m[1], repo: m[2], branch: "", path: "" };
+  // Tree URL: https://github.com/owner/repo/tree/branch[/path]
+  m = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/tree\/([^/]+)(?:\/(.+))?$/);
+  if (m) return { owner: m[1], repo: m[2], branch: m[3], path: m[4] ?? "" };
+  return null;
+}
+
+function isGithubRepoUrl(text: string): boolean {
+  text = text.trim();
+  if (/\s/.test(text)) return false;
+  return parseGithubRepoUrl(text) !== null;
+}
+
+async function installSkillFromUrl(ctx: MyContext, url: string): Promise<void> {
+  const rawUrl = githubToRaw(url);
+  const statusMsg = await ctx.reply("⬇️ Downloading skill from GitHub…");
+  try {
+    const r = await agentAxios.get(rawUrl, { timeout: 30_000, responseType: "text" });
+    if (r.status !== 200) {
+      await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+        `❌ Failed to download skill: HTTP ${r.status}\n\`${rawUrl}\``, { parse_mode: "Markdown" });
+      return;
+    }
+    const yamlContent = r.data;
+    const r2 = await agentAxios.post(`${AGENT_URL}/skills`, { yaml: yamlContent }, { timeout: 15_000 });
+    if (r2.data.error) {
+      await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+        `❌ Invalid skill YAML:\n\`${r2.data.error}\``, { parse_mode: "Markdown" });
+      return;
+    }
+    const name     = r2.data.name      ?? "?";
+    const toolName = r2.data.tool_name ?? `skill_${name}`;
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+      `✅ Skill \`${name}\` installed from GitHub!\nTool: \`${toolName}\`\n\nUse \`/skill show ${name}\` to inspect it.`,
+      { parse_mode: "Markdown" });
+  } catch (e) {
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+      `❌ Download/install failed: ${sanitize(String(e))}`);
+  }
+}
+
+async function listGithubYamlFiles(
+  owner: string, repo: string, branch: string, pathPrefix: string
+): Promise<{ files: string[]; warn: string; branch: string }> {
+  const headers = { Accept: "application/vnd.github.v3+json", "User-Agent": "openclaw-bot/1.0" };
+
+  // Resolve default branch if not known
+  if (!branch) {
+    const r = await agentAxios.get(`https://api.github.com/repos/${owner}/${repo}`, { headers, timeout: 15_000 });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status} fetching repo info`);
+    branch = r.data.default_branch ?? "main";
+  }
+
+  const r = await agentAxios.get(
+    `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+    { headers, timeout: 25_000 },
+  );
+  if (r.status !== 200) throw new Error(`HTTP ${r.status} from GitHub API`);
+
+  const tree:      any[]  = r.data.tree ?? [];
+  const truncated: boolean = r.data.truncated ?? false;
+  const prefix = pathPrefix ? pathPrefix.replace(/\/+$/, "") + "/" : "";
+
+  const files = tree
+    .filter(item => item.type === "blob"
+      && /\.ya?ml$/i.test(item.path)
+      && (!prefix || item.path.startsWith(prefix)))
+    .map(item => item.path as string)
+    .sort();
+
+  const warn = truncated ? "_(Note: repo has too many files; list may be incomplete)_" : "";
+  return { files, warn, branch };
+}
+
+async function browseGithubSkills(ctx: MyContext, repoInfo: { owner: string; repo: string; branch: string; path: string }): Promise<void> {
+  const { owner, repo, path } = repoInfo;
+  let { branch } = repoInfo;
+
+  const loc = `\`${owner}/${repo}\`` + (path ? `\`/${path}\`` : "");
+  const statusMsg = await ctx.reply(`🔍 Scanning ${loc} for skill files…`, { parse_mode: "Markdown" });
+
+  let files: string[], warn: string;
+  try {
+    ({ files, warn, branch } = await listGithubYamlFiles(owner, repo, branch, path));
+  } catch (e) {
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+      `❌ GitHub API error: ${sanitize(String(e))}`);
+    return;
+  }
+
+  if (!files.length) {
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+      `❌ No \`.yaml\`/\`.yml\` files found in ${loc}.`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  // Store browse state
+  clearFlows(ctx);
+  ctx.session.skillBrowseRepo  = { owner, repo, branch };
+  ctx.session.skillBrowseFiles = files;
+  ctx.session.skillBrowseStep  = "waiting";
+
+  const MAX_SHOWN = 40;
+  const shown = files.slice(0, MAX_SHOWN);
+  const lines = [`📦 Found *${files.length}* skill file(s) in \`${owner}/${repo}\`:\n`];
+  shown.forEach((f, i) => lines.push(`\`${i + 1}.\` \`${f}\``));
+  if (files.length > MAX_SHOWN) lines.push(`\n_…and ${files.length - MAX_SHOWN} more (first ${MAX_SHOWN} shown)_`);
+  if (warn) lines.push(`\n${warn}`);
+  lines.push(
+    "\nReply with:\n" +
+    "• A number — e.g. `3`\n" +
+    "• Multiple numbers — e.g. `1 3 5`\n" +
+    "• A range — e.g. `2-5`\n" +
+    "• `all` — install everything\n" +
+    "• `/cancel` to abort"
+  );
+  await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+    lines.join("\n"), { parse_mode: "Markdown" });
+}
+
+async function handleSkillBrowseStep(ctx: MyContext): Promise<boolean> {
+  if (ctx.session.skillBrowseStep !== "waiting") return false;
+  const text = (ctx.message?.text ?? "").trim();
+  if (!text) return false;
+
+  const files    = ctx.session.skillBrowseFiles ?? [];
+  const repoMeta = ctx.session.skillBrowseRepo ?? { owner: "", repo: "", branch: "main" };
+
+  // Parse selection
+  const selected = new Set<number>();
+  if (text.toLowerCase() === "all") {
+    for (let i = 0; i < files.length; i++) selected.add(i);
+  } else {
+    for (const token of text.split(/[\s,]+/)) {
+      const rangeM = token.match(/^(\d+)-(\d+)$/);
+      if (rangeM) {
+        const lo = parseInt(rangeM[1], 10), hi = parseInt(rangeM[2], 10);
+        for (let i = lo; i <= Math.min(hi, files.length); i++) {
+          if (i >= 1) selected.add(i - 1);
+        }
+      } else if (/^\d+$/.test(token)) {
+        const i = parseInt(token, 10);
+        if (i >= 1 && i <= files.length) selected.add(i - 1);
+      }
+    }
+  }
+
+  if (!selected.size) {
+    await ctx.reply("❓ Please reply with a number, range, or `all`.\nExample: `3`, `1 2 5`, `2-4`, `all`",
+      { parse_mode: "Markdown" });
+    return true;
+  }
+
+  // Clear browse state
+  delete ctx.session.skillBrowseStep;
+  delete ctx.session.skillBrowseFiles;
+  delete ctx.session.skillBrowseRepo;
+
+  const chosen = [...selected].sort((a, b) => a - b).map(i => files[i]);
+
+  const statusMsg = chosen.length === 1
+    ? await ctx.reply(`⬇️ Installing \`${chosen[0]}\`…`, { parse_mode: "Markdown" })
+    : await ctx.reply(`⬇️ Installing ${chosen.length} skill(s)…`);
+
+  const results: string[] = [];
+  for (const fpath of chosen) {
+    const rawUrl = `https://raw.githubusercontent.com/${repoMeta.owner}/${repoMeta.repo}/${repoMeta.branch}/${fpath}`;
+    try {
+      const r = await agentAxios.get(rawUrl, { timeout: 20_000, responseType: "text" });
+      if (r.status !== 200) { results.push(`❌ \`${fpath}\` — HTTP ${r.status}`); continue; }
+      const r2 = await agentAxios.post(`${AGENT_URL}/skills`, { yaml: r.data }, { timeout: 15_000 });
+      if (r2.data.error) { results.push(`❌ \`${fpath}\` — ${r2.data.error}`); }
+      else { results.push(`✅ \`${r2.data.name ?? fpath}\``); }
+    } catch (e) { results.push(`❌ \`${fpath}\` — ${sanitize(String(e))}`); }
+  }
+
+  await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
+    "📦 Install results:\n\n" + results.join("\n"), { parse_mode: "Markdown" });
+  return true;
+}
+
+// ─── /skill command ──────────────────────────────────────────────────────────
+
+bot.command(["skill", "skills"], async ctx => {
   if (!isAdmin(ctx)) return;
   const args = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
   const sub  = (args[0] ?? "").toLowerCase();
@@ -942,6 +1165,33 @@ bot.command("skill", async ctx => {
     return;
   }
 
+  if (sub === "install") {
+    if (!args[1]) {
+      await ctx.reply(
+        "📦 *Install a skill from GitHub*\n\n" +
+        "Usage: `/skill install <github-url>`\n\n" +
+        "Supports:\n" +
+        "• Direct file: `.../blob/main/skill.yaml`\n" +
+        "• Whole repo: `https://github.com/user/repo`\n" +
+        "• Subdirectory: `.../tree/main/subdir`\n\n" +
+        "_Tip: paste any GitHub URL directly in chat — the bot detects it automatically!_",
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const url = args[1];
+    if (isGithubYamlUrl(url)) {
+      await installSkillFromUrl(ctx, url);
+    } else if (isGithubRepoUrl(url)) {
+      const info = parseGithubRepoUrl(url)!;
+      await browseGithubSkills(ctx, info);
+    } else {
+      await ctx.reply("❌ Unrecognised URL. Please provide a GitHub `.yaml` file link or a repo/directory URL.",
+        { parse_mode: "Markdown" });
+    }
+    return;
+  }
+
   if (sub === "create") {
     clearFlows(ctx);
     ctx.session.skillDraft = {};
@@ -961,7 +1211,8 @@ bot.command("skill", async ctx => {
     const custom  = (r.data.custom  ?? []).map((n: string) => `• \`${n}\``).join("\n") || "_(none)_";
     await ctx.reply(
       `🔌 *Custom Skills:*\n${custom}\n\n⚙️ *Built-in Tools:*\n${builtin}\n\n` +
-      "Sub-commands:\n• `/skill create` — guided skill creation\n• `/skill show <name>` — view skill YAML\n• `/skill delete <name>` — remove a skill\n• `/skill reload` — reload from disk",
+      "Sub-commands:\n• `/skill create` — guided skill creation\n• `/skill install <github-url>` — install from GitHub\n• `/skill show <name>` — view skill YAML\n• `/skill delete <name>` — remove a skill\n• `/skill reload` — reload from disk\n\n" +
+      "_Tip: paste a GitHub `.yaml` URL directly in chat to auto-install._",
       { parse_mode: "Markdown" },
     );
   } catch (e) { await ctx.reply(`❌ Error fetching skills: ${e}`); }
@@ -1360,6 +1611,7 @@ async function doMcpInstall(ctx: MyContext): Promise<void> {
   }
 }
 async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
+  ctx.session.stopRequested = false;
   const manualModel = ctx.session.model;
   const history     = ctx.session.history ?? [];
 
@@ -1400,8 +1652,14 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
     );
 
     let buffer = "";
+    let stopped = false;
     await new Promise<void>((resolve) => {
       response.data.on("data", (chunk: Buffer) => {
+        if (ctx.session.stopRequested) {
+          stopped = true;
+          response.data.destroy();
+          return;
+        }
         buffer += chunk.toString("utf8");
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
@@ -1425,7 +1683,14 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
       });
       response.data.on("end",   resolve);
       response.data.on("error", resolve);
+      response.data.on("close", resolve);
     });
+
+    if (stopped || ctx.session.stopRequested) {
+      ctx.session.stopRequested = false;
+      try { await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, "🛑 Stopped."); } catch {}
+      return;
+    }
   } catch (e: any) {
     if (e.code === "ECONNABORTED" || e.message?.includes("timeout")) {
       result = "⏱️ Timed out after 5 minutes.";
@@ -1468,9 +1733,22 @@ bot.on("message:text", async ctx => {
   if (await handleSkillDeleteConfirm(ctx)) return;
   if (await handleSkillCreateStep(ctx))    return;
   if (await handleMcpInstallStep(ctx))     return;
+  if (await handleSkillBrowseStep(ctx))    return;
+  if (await handlePendingMedia(ctx))       return;
 
   const userText = (ctx.message.text ?? "").trim();
   if (!userText) return;
+
+  // Auto-detect GitHub URLs and handle them without hitting the agent
+  if (isGithubYamlUrl(userText)) {
+    await installSkillFromUrl(ctx, userText);
+    return;
+  }
+  if (isGithubRepoUrl(userText)) {
+    const info = parseGithubRepoUrl(userText)!;
+    await browseGithubSkills(ctx, info);
+    return;
+  }
 
   await ctx.replyWithChatAction("typing");
   await runAgentTask(ctx, userText);
@@ -1527,30 +1805,19 @@ bot.on("message:voice", async ctx => {
   await ctx.replyWithChatAction("typing");
   await runAgentTask(ctx, transcript);
 });
-bot.on("message:photo", async ctx => {
-  if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
+// ─── Media flow helpers ──────────────────────────────────────────────────────
 
-  const photo      = ctx.message.photo[ctx.message.photo.length - 1];
-  const caption    = (ctx.message.caption ?? "").trim();
-  const statusMsg  = await ctx.reply("📤 Uploading to WordPress media library…");
+async function processPendingMedia(ctx: MyContext, taskDescription: string): Promise<void> {
+  const media = ctx.session.pendingMedia;
+  delete ctx.session.pendingMedia;
+  delete ctx.session.mediaStep;
+  if (!media) return;
 
-  let photoBytes: Buffer;
-  try {
-    const tgFile = await ctx.api.getFile(photo.file_id);
-    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${tgFile.file_path}`;
-    const resp = await axios.get(fileUrl, { responseType: "arraybuffer", proxy: false,
-      httpsAgent: HTTPS_PROXY ? new HttpsProxyAgent(HTTPS_PROXY) : undefined });
-    photoBytes = Buffer.from(resp.data);
-  } catch (e) {
-    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Failed to download photo: ${sanitize(String(e))}`);
-    return;
-  }
-
-  const filename = `telegram_${photo.file_id}.jpg`;
+  const statusMsg = await ctx.reply("📤 Uploading image…");
   let uploadData: any;
   try {
     const form = new FormData();
-    form.append("file", photoBytes, { filename, contentType: "image/jpeg" });
+    form.append("file", Buffer.from(media.bytes), { filename: media.filename, contentType: media.contentType });
     const r = await agentAxios.post(`${AGENT_URL}/upload`, form, {
       headers: form.getHeaders(),
       timeout: 60_000,
@@ -1569,19 +1836,79 @@ bot.on("message:photo", async ctx => {
   const mediaUrl = uploadData.url ?? "";
   const mediaId  = uploadData.id  ?? "";
 
-  if (!caption) {
-    await ctx.api.editMessageText(
-      statusMsg.chat.id,
-      statusMsg.message_id,
+  await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id);
+
+  // Simple upload-only keywords
+  const lower = taskDescription.toLowerCase().trim();
+  const uploadOnly = ["upload", "save", "store", "media library",
+    "upload to wordpress", "save to wordpress",
+    "upload to wordpress media library", "save to library"];
+  if (uploadOnly.includes(lower)) {
+    await ctx.reply(
       `✅ Uploaded to WordPress media library!\n🆔 ID: \`${mediaId}\`\n🔗 ${mediaUrl}`,
       { parse_mode: "Markdown" },
     );
     return;
   }
 
-  await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id);
   await ctx.replyWithChatAction("typing");
-  await runAgentTask(ctx, `A photo was just uploaded to the WordPress media library (ID: ${mediaId}, URL: ${mediaUrl}). ${caption}`);
+  await runAgentTask(ctx,
+    `The user shared an image that was uploaded to WordPress (Media ID: ${mediaId}, URL: ${mediaUrl}). Task: ${taskDescription}`);
+}
+
+async function handlePendingMedia(ctx: MyContext): Promise<boolean> {
+  if (ctx.session.mediaStep !== "waiting") return false;
+  const text = (ctx.message?.text ?? "").trim();
+  if (!text) return false;
+  await processPendingMedia(ctx, text);
+  return true;
+}
+
+bot.on("message:photo", async ctx => {
+  if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
+
+  const photo   = ctx.message.photo[ctx.message.photo.length - 1];
+  const caption = (ctx.message.caption ?? "").trim();
+
+  const statusMsg = await ctx.reply("📥 Receiving image…");
+
+  let photoBytes: Buffer;
+  try {
+    const tgFile  = await ctx.api.getFile(photo.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${tgFile.file_path}`;
+    const resp    = await axios.get(fileUrl, { responseType: "arraybuffer", proxy: false,
+      httpsAgent: HTTPS_PROXY ? new HttpsProxyAgent(HTTPS_PROXY) : undefined });
+    photoBytes = Buffer.from(resp.data);
+  } catch (e) {
+    await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, `❌ Failed to download image: ${sanitize(String(e))}`);
+    return;
+  }
+  await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id);
+
+  // Store image bytes in session, wait for instructions
+  ctx.session.pendingMedia = {
+    bytes: [...photoBytes],
+    filename: `telegram_${photo.file_id}.jpg`,
+    contentType: "image/jpeg",
+  };
+  ctx.session.mediaStep = "waiting";
+
+  if (caption) {
+    // Caption = instant instructions
+    await processPendingMedia(ctx, caption);
+    return;
+  }
+
+  await ctx.reply(
+    "📸 Got your image! What would you like to do with it?\n\n" +
+    "• _Upload to WordPress media library_\n" +
+    "• _Set as featured image for a new post_\n" +
+    "• _Use in a blog post about..._\n" +
+    "• _Analyse and describe it_\n" +
+    "• _Any other task_\n\n" +
+    "Just describe what you want, or type `/cancel` to discard.",
+    { parse_mode: "Markdown" },
+  );
 });
 async function main(): Promise<void> {
   // Register bot commands in Telegram's menu
@@ -1589,9 +1916,10 @@ async function main(): Promise<void> {
     { command: "start",  description: "Welcome message & feature list" },
     { command: "status", description: "Check agent health" },
     { command: "model",  description: "Show or switch AI model" },
+    { command: "stop",   description: "Abort current AI request" },
     { command: "cancel", description: "Clear history / cancel active flow" },
     { command: "tasks",  description: "List or cancel scheduled tasks" },
-    { command: "skill",  description: "List, create, delete, reload custom skills" },
+    { command: "skill",  description: "List, create, install (GitHub), delete custom skills" },
     { command: "mcp",    description: "Install, list, remove MCP tool servers" },
   ]);
 
