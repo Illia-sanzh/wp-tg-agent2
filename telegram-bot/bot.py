@@ -12,6 +12,7 @@ Features:
   • /start         → welcome + feature list
   • /status        → agent health check
   • /model         → show or switch AI model
+  • /stop          → abort the current AI request
   • /cancel        → clear conversation history (also cancels active flows)
   • /tasks         → list / cancel scheduled tasks
   • /skill         → list, create, install (GitHub), show, delete, reload skills
@@ -23,6 +24,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 
 import requests
@@ -425,7 +427,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/tasks`   — list or cancel scheduled tasks\n"
         "`/skill`   — manage custom skills\n"
         "`/mcp`     — manage MCP tool servers\n"
-        "`/cancel`  — cancel current task & clear history",
+        "`/stop`    — abort current AI request\n"
+        "`/cancel`  — clear history & cancel flows",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -524,12 +527,28 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     in_flow = _in_flow(ctx)
     _clear_flows(ctx)
-    ctx.user_data.pop("running", None)
+    # Also stop any running agent request
+    stop_event: threading.Event | None = ctx.user_data.get("stop_event")
+    if stop_event:
+        stop_event.set()
+    ctx.user_data.pop("stop_event", None)
     ctx.user_data.pop("history", None)
     if in_flow:
         await update.message.reply_text("🛑 Flow cancelled and conversation history cleared.")
     else:
         await update.message.reply_text("🛑 Task cancelled and conversation history cleared.")
+
+
+async def cmd_stop(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Abort the current AI request without clearing history."""
+    if not is_admin(update):
+        return
+    stop_event: threading.Event | None = ctx.user_data.get("stop_event")
+    if stop_event and not stop_event.is_set():
+        stop_event.set()
+        await update.message.reply_text("🛑 Stopping current request…")
+    else:
+        await update.message.reply_text("ℹ️ Nothing is running right now.")
 
 
 async def cmd_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1503,6 +1522,10 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
 
     status_msg = await update.message.reply_text(f"🤔 Thinking… ({model_hint})", parse_mode=ParseMode.MARKDOWN)
 
+    # Cancellation event — /stop or /cancel sets this to abort the request
+    stop_event = threading.Event()
+    ctx.user_data["stop_event"] = stop_event
+
     loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -1516,23 +1539,28 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
             ) as r:
                 r.raise_for_status()
                 for raw in r.iter_lines(decode_unicode=True):
+                    if stop_event.is_set():
+                        break
                     if raw:
                         try:
                             asyncio.run_coroutine_threadsafe(queue.put(json.loads(raw)), loop)
                         except Exception:
                             pass
         except requests.exceptions.Timeout:
-            asyncio.run_coroutine_threadsafe(
-                queue.put({"type": "result", "text": "⏱️ Timed out after 5 minutes.", "elapsed": 300, "model": model}), loop
-            )
+            if not stop_event.is_set():
+                asyncio.run_coroutine_threadsafe(
+                    queue.put({"type": "result", "text": "⏱️ Timed out after 5 minutes.", "elapsed": 300, "model": model}), loop
+                )
         except requests.exceptions.ConnectionError:
-            asyncio.run_coroutine_threadsafe(
-                queue.put({"type": "result", "text": "❌ Agent is unreachable.", "elapsed": 0, "model": model}), loop
-            )
+            if not stop_event.is_set():
+                asyncio.run_coroutine_threadsafe(
+                    queue.put({"type": "result", "text": "❌ Agent is unreachable.", "elapsed": 0, "model": model}), loop
+                )
         except Exception as e:
-            asyncio.run_coroutine_threadsafe(
-                queue.put({"type": "result", "text": f"❌ Error: {e}", "elapsed": 0, "model": model}), loop
-            )
+            if not stop_event.is_set():
+                asyncio.run_coroutine_threadsafe(
+                    queue.put({"type": "result", "text": f"❌ Error: {e}", "elapsed": 0, "model": model}), loop
+                )
         finally:
             asyncio.run_coroutine_threadsafe(queue.put(None), loop)
 
@@ -1542,6 +1570,7 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
     elapsed    = 0
     model_used = model
     steps: list[str] = []
+    stopped    = False
 
     def build_status() -> str:
         lines = ["🤔 Thinking…"]
@@ -1554,6 +1583,9 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
     while True:
         event = await queue.get()
         if event is None:
+            break
+        if stop_event.is_set():
+            stopped = True
             break
         etype = event.get("type")
         if etype == "progress":
@@ -1571,6 +1603,16 @@ async def _run_agent_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, task_t
             result     = event.get("text", "(no result)")
             elapsed    = event.get("elapsed", 0)
             model_used = event.get("model", model)
+
+    # Clean up stop event
+    ctx.user_data.pop("stop_event", None)
+
+    if stopped:
+        try:
+            await status_msg.edit_text("🛑 Stopped.")
+        except Exception:
+            pass
+        return
 
     history = ctx.user_data.get("history", [])
     history.append({"role": "user",      "content": task_text})
@@ -1809,6 +1851,7 @@ async def post_init(app: Application) -> None:
         BotCommand("start",  "Welcome message & feature list"),
         BotCommand("status", "Check agent health"),
         BotCommand("model",  "Show or switch AI model"),
+        BotCommand("stop",   "Abort current AI request"),
         BotCommand("cancel", "Clear history / cancel active flow"),
         BotCommand("tasks",  "List or cancel scheduled tasks"),
         BotCommand("skill",  "List, create, install (GitHub), delete custom skills"),
@@ -1830,9 +1873,11 @@ def main():
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("model",  cmd_model))
+    app.add_handler(CommandHandler("stop",   cmd_stop))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("tasks",  cmd_tasks))
     app.add_handler(CommandHandler("skill",  cmd_skill))
+    app.add_handler(CommandHandler("skills", cmd_skill))   # common alias
     app.add_handler(CommandHandler("mcp",    cmd_mcp))
 
     app.add_handler(MessageHandler(filters.TEXT  & ~filters.COMMAND, handle_message))
