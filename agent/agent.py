@@ -174,6 +174,13 @@ openclaw-config/skills/. Use any loaded skill the same way as built-in tools.
 
 SYSTEM_PROMPT = load_system_prompt()
 
+
+def _full_system_prompt() -> str:
+    """Return the system prompt with any markdown skills appended."""
+    if not _cached_markdown_skills:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + "\n\n## Installed Knowledge Skills\n\n" + _cached_markdown_skills
+
 # ─── Built-in tools definition ────────────────────────────────────────────────
 
 TOOLS: list[dict] = [
@@ -377,8 +384,31 @@ def load_custom_skills() -> list[dict]:
     return tools
 
 
+def load_markdown_skills() -> str:
+    """
+    Read Markdown skill files from the skills directory (*.md).
+    These are knowledge/context documents (not callable tools) that get injected
+    into the system prompt so the LLM can reference them.
+    """
+    if not SKILLS_DIR.exists():
+        return ""
+
+    parts = []
+    for md_file in sorted(SKILLS_DIR.glob("*.md")):
+        try:
+            content = md_file.read_text().strip()
+            if content:
+                parts.append(f"### Skill: {md_file.stem}\n\n{content}")
+                app.logger.info(f"Loaded markdown skill: {md_file.stem}")
+        except Exception as e:
+            app.logger.warning(f"Failed to load markdown skill {md_file.name}: {e}")
+
+    return "\n\n---\n\n".join(parts)
+
+
 # Cached list of custom skill tool defs — refreshed by POST /reload-skills
 _cached_custom_tools: list[dict] = []
+_cached_markdown_skills: str = ""
 
 # ─── MCP tool loader ──────────────────────────────────────────────────────────
 
@@ -897,14 +927,14 @@ def run_agent(user_message: str, model: str = None, history: list = None):
                 messages=messages,
                 tools=all_tools,
                 tool_choice="auto",
-                system=SYSTEM_PROMPT,  # OpenAI-compat passes system separately
+                system=_full_system_prompt(),
                 max_tokens=4096,
             )
         except TypeError:
             # Some model configurations don't accept 'system' as a kwarg;
             # prepend it as a system message instead.
             if not system_injected:
-                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+                messages = [{"role": "system", "content": _full_system_prompt()}] + messages
                 system_injected = True
             response = client.chat.completions.create(
                 model=model,
@@ -1087,25 +1117,30 @@ def cancel_schedule(job_id: str):
 
 @app.get("/skills")
 def list_skills_endpoint():
-    """Return names of all available tools (built-in + custom skills)."""
+    """Return names of all available tools (built-in + custom + markdown skills)."""
+    md_names = sorted(f.stem for f in SKILLS_DIR.glob("*.md")) if SKILLS_DIR.exists() else []
     return jsonify({
-        "builtin": [t["function"]["name"] for t in TOOLS],
-        "custom":  [t["function"]["name"] for t in _cached_custom_tools],
-        "count":   len(TOOLS) + len(_cached_custom_tools),
+        "builtin":  [t["function"]["name"] for t in TOOLS],
+        "custom":   [t["function"]["name"] for t in _cached_custom_tools],
+        "markdown": md_names,
+        "count":    len(TOOLS) + len(_cached_custom_tools) + len(md_names),
     })
 
 
 @app.post("/reload-skills")
 def reload_skills():
-    """Hot-reload YAML skill files from openclaw-config/skills/ without restarting."""
-    global _cached_custom_tools
+    """Hot-reload skill files from openclaw-config/skills/ without restarting."""
+    global _cached_custom_tools, _cached_markdown_skills
     old_count = len(_cached_custom_tools)
     _cached_custom_tools = load_custom_skills()
+    _cached_markdown_skills = load_markdown_skills()
     new_count = len(_cached_custom_tools)
+    md_count = len([f for f in SKILLS_DIR.glob("*.md")]) if SKILLS_DIR.exists() else 0
     return jsonify({
-        "loaded":   new_count,
-        "previous": old_count,
-        "skills":   [t["function"]["name"] for t in _cached_custom_tools],
+        "loaded":     new_count,
+        "previous":   old_count,
+        "skills":     [t["function"]["name"] for t in _cached_custom_tools],
+        "markdown":   md_count,
     })
 
 
@@ -1163,16 +1198,22 @@ def validate_skill_yaml(raw: str) -> "dict | str":
 
 @app.get("/skills/<name>")
 def get_skill(name: str):
-    """Return the raw YAML for a single skill by name."""
-    if not re.match(r"^[a-zA-Z0-9_]+$", name):
+    """Return the raw content for a single skill by name (YAML or Markdown)."""
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
         return jsonify({"error": "Invalid skill name"}), 400
     if not SKILLS_DIR.exists():
         return jsonify({"error": "Skills directory not found"}), 404
+
+    # Check markdown first
+    md_path = SKILLS_DIR / f"{name}.md"
+    if md_path.exists():
+        return jsonify({"name": name, "type": "markdown", "yaml": md_path.read_text()})
+
     for skill_file in SKILLS_DIR.glob("*.yaml"):
         try:
             skill = yaml.safe_load(skill_file.read_text())
             if skill and skill.get("name") == name:
-                return jsonify({"name": name, "yaml": skill_file.read_text()})
+                return jsonify({"name": name, "type": "yaml", "yaml": skill_file.read_text()})
         except Exception:
             continue
     return jsonify({"error": f"Skill '{name}' not found"}), 404
@@ -1180,12 +1221,34 @@ def get_skill(name: str):
 
 @app.post("/skills")
 def create_skill():
-    """Create or replace a custom skill from a YAML string."""
-    global _cached_custom_tools
+    """Create or replace a custom skill from YAML or Markdown."""
+    global _cached_custom_tools, _cached_markdown_skills
     body = request.get_json(silent=True) or {}
+
+    # ── Markdown skill (knowledge document) ──────────────────────────────
+    md_content = body.get("markdown", "").strip()
+    md_name    = body.get("name", "").strip()
+    if md_content:
+        if not md_name:
+            return jsonify({"error": "Markdown skills require a 'name' field"}), 400
+        if not re.match(r"^[a-zA-Z0-9_-]+$", md_name):
+            return jsonify({"error": "Name must be alphanumeric (plus _ and -)"}), 400
+        SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        skill_path = SKILLS_DIR / f"{md_name}.md"
+        skill_path.write_text(md_content)
+        _cached_markdown_skills = load_markdown_skills()
+        app.logger.info(f"Markdown skill created/updated: {md_name}")
+        return jsonify({
+            "status": "created",
+            "name":   md_name,
+            "type":   "markdown",
+            "file":   skill_path.name,
+        })
+
+    # ── YAML skill (callable tool) ───────────────────────────────────────
     raw = body.get("yaml", "").strip()
     if not raw:
-        return jsonify({"error": "Request body must include 'yaml' field"}), 400
+        return jsonify({"error": "Request body must include 'yaml' or 'markdown' field"}), 400
 
     result = validate_skill_yaml(raw)
     if isinstance(result, str):
@@ -1210,13 +1273,22 @@ def create_skill():
 
 @app.delete("/skills/<name>")
 def delete_skill(name: str):
-    """Delete a custom skill by name."""
-    global _cached_custom_tools
-    if not re.match(r"^[a-zA-Z0-9_]+$", name):
+    """Delete a custom skill by name (YAML or Markdown)."""
+    global _cached_custom_tools, _cached_markdown_skills
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
         return jsonify({"error": "Invalid skill name"}), 400
     if not SKILLS_DIR.exists():
         return jsonify({"error": "Skills directory not found"}), 404
 
+    # Check for markdown skill first
+    md_path = SKILLS_DIR / f"{name}.md"
+    if md_path.exists():
+        md_path.unlink()
+        _cached_markdown_skills = load_markdown_skills()
+        app.logger.info(f"Markdown skill deleted: {name}")
+        return jsonify({"status": "deleted", "name": name})
+
+    # Then check YAML skills
     found = None
     for skill_file in SKILLS_DIR.glob("*.yaml"):
         try:
@@ -1310,7 +1382,9 @@ def reload_mcps():
 
 # Load custom skills at import time (gunicorn imports this module once per worker)
 _cached_custom_tools = load_custom_skills()
-app.logger.info(f"Custom skills loaded: {len(_cached_custom_tools)}")
+_cached_markdown_skills = load_markdown_skills()
+app.logger.info(f"Custom skills loaded: {len(_cached_custom_tools)} tool(s), "
+                f"{len(_cached_markdown_skills)} chars of markdown knowledge")
 
 # Load MCP tools (graceful — returns [] if runner not yet healthy)
 _cached_mcp_tools = load_mcp_tools()

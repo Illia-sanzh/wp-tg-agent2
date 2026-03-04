@@ -943,10 +943,10 @@ function githubToRaw(url: string): string {
   return url.trim();
 }
 
-function isGithubYamlUrl(text: string): boolean {
+function isGithubSkillFileUrl(text: string): boolean {
   text = text.trim();
   if (/\s/.test(text)) return false;
-  return /^https:\/\/(?:github\.com\/[^/]+\/[^/]+\/blob\/|raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)[^\s]+\.ya?ml$/.test(text);
+  return /^https:\/\/(?:github\.com\/[^/]+\/[^/]+\/blob\/|raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)[^\s]+\.(?:ya?ml|md)$/.test(text);
 }
 
 function parseGithubRepoUrl(url: string): { owner: string; repo: string; branch: string; path: string } | null {
@@ -968,6 +968,7 @@ function isGithubRepoUrl(text: string): boolean {
 
 async function installSkillFromUrl(ctx: MyContext, url: string): Promise<void> {
   const rawUrl = githubToRaw(url);
+  const isMd   = /\.md$/i.test(rawUrl);
   const statusMsg = await ctx.reply("⬇️ Downloading skill from GitHub…");
   try {
     const r = await externalAxios.get(rawUrl, { timeout: 30_000, responseType: "text" });
@@ -976,17 +977,19 @@ async function installSkillFromUrl(ctx: MyContext, url: string): Promise<void> {
         `❌ Failed to download skill: HTTP ${r.status}\n\`${rawUrl}\``, { parse_mode: "Markdown" });
       return;
     }
-    const yamlContent = r.data;
-    const r2 = await agentAxios.post(`${AGENT_URL}/skills`, { yaml: yamlContent }, { timeout: 15_000 });
+    const body = isMd
+      ? { markdown: r.data, name: rawUrl.split("/").pop()!.replace(/\.md$/i, "") }
+      : { yaml: r.data };
+    const r2 = await agentAxios.post(`${AGENT_URL}/skills`, body, { timeout: 15_000 });
     if (r2.data.error) {
       await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
-        `❌ Invalid skill YAML:\n\`${r2.data.error}\``, { parse_mode: "Markdown" });
+        `❌ Invalid skill:\n\`${r2.data.error}\``, { parse_mode: "Markdown" });
       return;
     }
-    const name     = r2.data.name      ?? "?";
-    const toolName = r2.data.tool_name ?? `skill_${name}`;
+    const name = r2.data.name ?? "?";
+    const label = isMd ? "knowledge skill" : "tool skill";
     await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
-      `✅ Skill \`${name}\` installed from GitHub!\nTool: \`${toolName}\`\n\nUse \`/skill show ${name}\` to inspect it.`,
+      `✅ Skill \`${name}\` installed as ${label}!\n\nUse \`/skill show ${name}\` to inspect it.`,
       { parse_mode: "Markdown" });
   } catch (e) {
     await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
@@ -994,7 +997,20 @@ async function installSkillFromUrl(ctx: MyContext, url: string): Promise<void> {
   }
 }
 
-async function listGithubYamlFiles(
+// Non-skill markdown filenames to exclude from browsing
+const EXCLUDED_MD = new Set(["readme", "contributing", "changelog", "license", "code_of_conduct", "security"]);
+
+function isSkillFile(path: string): boolean {
+  const lower = path.toLowerCase();
+  if (/\.ya?ml$/i.test(lower)) return true;
+  if (/\.md$/i.test(lower)) {
+    const basename = lower.split("/").pop()?.replace(/\.md$/, "") ?? "";
+    return !EXCLUDED_MD.has(basename);
+  }
+  return false;
+}
+
+async function listGithubSkillFiles(
   owner: string, repo: string, branch: string, pathPrefix: string
 ): Promise<{ files: string[]; warn: string; branch: string }> {
   const headers = { Accept: "application/vnd.github.v3+json", "User-Agent": "openclaw-bot/1.0" };
@@ -1018,7 +1034,7 @@ async function listGithubYamlFiles(
 
   const files = tree
     .filter(item => item.type === "blob"
-      && /\.ya?ml$/i.test(item.path)
+      && isSkillFile(item.path)
       && (!prefix || item.path.startsWith(prefix)))
     .map(item => item.path as string)
     .sort();
@@ -1036,7 +1052,7 @@ async function browseGithubSkills(ctx: MyContext, repoInfo: { owner: string; rep
 
   let files: string[], warn: string;
   try {
-    ({ files, warn, branch } = await listGithubYamlFiles(owner, repo, branch, path));
+    ({ files, warn, branch } = await listGithubSkillFiles(owner, repo, branch, path));
   } catch (e) {
     await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id,
       `❌ GitHub API error: ${sanitize(String(e))}`);
@@ -1123,9 +1139,14 @@ async function handleSkillBrowseStep(ctx: MyContext): Promise<boolean> {
     try {
       const r = await externalAxios.get(rawUrl, { timeout: 20_000, responseType: "text" });
       if (r.status !== 200) { results.push(`❌ \`${fpath}\` — HTTP ${r.status}`); continue; }
-      const r2 = await agentAxios.post(`${AGENT_URL}/skills`, { yaml: r.data }, { timeout: 15_000 });
+
+      const isMd = /\.md$/i.test(fpath);
+      const body = isMd
+        ? { markdown: r.data, name: fpath.split("/").pop()!.replace(/\.md$/i, "") }
+        : { yaml: r.data };
+      const r2 = await agentAxios.post(`${AGENT_URL}/skills`, body, { timeout: 15_000 });
       if (r2.data.error) { results.push(`❌ \`${fpath}\` — ${r2.data.error}`); }
-      else { results.push(`✅ \`${r2.data.name ?? fpath}\``); }
+      else { results.push(`✅ \`${r2.data.name ?? fpath}\`${isMd ? " _(knowledge)_" : ""}`); }
     } catch (e) { results.push(`❌ \`${fpath}\` — ${sanitize(String(e))}`); }
   }
 
@@ -1185,7 +1206,7 @@ bot.command(["skill", "skills"], async ctx => {
       return;
     }
     const url = args[1];
-    if (isGithubYamlUrl(url)) {
+    if (isGithubSkillFileUrl(url)) {
       await installSkillFromUrl(ctx, url);
     } else if (isGithubRepoUrl(url)) {
       const info = parseGithubRepoUrl(url)!;
@@ -1214,10 +1235,16 @@ bot.command(["skill", "skills"], async ctx => {
     const r       = await agentAxios.get(`${AGENT_URL}/skills`, { timeout: 10000 });
     const builtin = (r.data.builtin ?? []).map((n: string) => `• \`${n}\``).join("\n");
     const custom  = (r.data.custom  ?? []).map((n: string) => `• \`${n}\``).join("\n") || "_(none)_";
+    const mdSkills = (r.data.markdown ?? []) as string[];
+    const mdText  = mdSkills.length
+      ? mdSkills.map((n: string) => `• \`${n}\` _(knowledge)_`).join("\n")
+      : "_(none)_";
     await ctx.reply(
-      `🔌 *Custom Skills:*\n${custom}\n\n⚙️ *Built-in Tools:*\n${builtin}\n\n` +
-      "Sub-commands:\n• `/skill create` — guided skill creation\n• `/skill install <github-url>` — install from GitHub\n• `/skill show <name>` — view skill YAML\n• `/skill delete <name>` — remove a skill\n• `/skill reload` — reload from disk\n\n" +
-      "_Tip: paste a GitHub `.yaml` URL directly in chat to auto-install._",
+      `🔌 *Custom Skills (tools):*\n${custom}\n\n` +
+      `📚 *Knowledge Skills:*\n${mdText}\n\n` +
+      `⚙️ *Built-in Tools:*\n${builtin}\n\n` +
+      "Sub-commands:\n• `/skill create` — guided skill creation\n• `/skill install <github-url>` — install from GitHub\n• `/skill show <name>` — view skill content\n• `/skill delete <name>` — remove a skill\n• `/skill reload` — reload from disk\n\n" +
+      "_Tip: paste a GitHub skill URL directly in chat to auto-install._",
       { parse_mode: "Markdown" },
     );
   } catch (e) { await ctx.reply(`❌ Error fetching skills: ${e}`); }
@@ -1745,7 +1772,7 @@ bot.on("message:text", async ctx => {
   if (!userText) return;
 
   // Auto-detect GitHub URLs and handle them without hitting the agent
-  if (isGithubYamlUrl(userText)) {
+  if (isGithubSkillFileUrl(userText)) {
     await installSkillFromUrl(ctx, userText);
     return;
   }
