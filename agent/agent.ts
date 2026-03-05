@@ -269,6 +269,12 @@ Use the \`schedule_task\` tool when the user asks to do something at a specific 
 - When the user gives a local time, ask for their UTC offset (e.g. +05:30) before scheduling.
 - Always tell the user the job ID returned so they can cancel it later with /tasks cancel <ID>.
 
+## Fetching Web Pages
+Use the \`fetch_page\` tool to download and inspect any public webpage's HTML/CSS.
+This is useful for copying designs, analysing page layouts, or extracting content.
+When asked to replicate a design, fetch the page first, study its HTML/CSS structure,
+then create clean HTML that captures the same visual layout and style.
+
 ## Custom Skills
 Additional tool functions may be available below if YAML skill files are present in
 openclaw-config/skills/. Use any loaded skill the same way as built-in tools.
@@ -362,6 +368,24 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
           reason: { type: "string", description: "One short sentence describing what this step does." },
         },
         required: ["task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_page",
+      description:
+        "Fetch a web page and return its HTML content. Use this to inspect the design, " +
+        "structure, or content of any public website. Useful for copying layouts, " +
+        "analysing page structure, or extracting text. Returns raw HTML (truncated to 30000 chars).",
+      parameters: {
+        type: "object",
+        properties: {
+          url:    { type: "string", description: "The full URL to fetch, e.g. https://nytimes.com" },
+          reason: { type: "string", description: "One short sentence describing why you're fetching this page." },
+        },
+        required: ["url"],
       },
     },
   },
@@ -614,6 +638,34 @@ function runCommand(command: string): string {
     return output.trim() || "(command completed with no output)";
   } catch (e) {
     return `ERROR: ${e}`;
+  }
+}
+
+const MAX_FETCH_CHARS = 30_000;
+
+async function fetchPage(url: string): Promise<string> {
+  try {
+    const resp = await httpRequest({
+      method: "get",
+      url,
+      timeout: 30_000,
+      responseType: "text",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; WPAgent/1.0)",
+        "Accept": "text/html,application/xhtml+xml,*/*",
+      },
+      // Follow redirects
+      maxRedirects: 5,
+    });
+    let html = typeof resp.data === "string" ? resp.data : String(resp.data);
+    if (html.length > MAX_FETCH_CHARS) {
+      html = html.slice(0, MAX_FETCH_CHARS) + `\n\n... [truncated at ${MAX_FETCH_CHARS} chars, full page is ${resp.data.length} chars]`;
+    }
+    return html;
+  } catch (e: any) {
+    const status = e?.response?.status;
+    if (status) return `ERROR: HTTP ${status} fetching ${url}`;
+    return `ERROR: ${e.message ?? e}`;
   }
 }
 
@@ -872,6 +924,7 @@ async function dispatchTool(name: string, args: Record<string, any>): Promise<st
   if (name === "wp_rest")        return wpRest(args.method ?? "GET", args.endpoint ?? "/", args.body, args.params);
   if (name === "wp_cli_remote")  return wpCliRemote(args.command ?? "");
   if (name === "schedule_task")  return scheduleTaskFn(args.task ?? "", args.run_at, args.cron, args.label);
+  if (name === "fetch_page")     return fetchPage(args.url ?? "");
   if (name.startsWith("skill_"))      return dispatchSkill(name, args);
   if (name.startsWith("mcp_"))        return dispatchMcpTool(name, args);
   if (name.startsWith("wp_ability__")) return dispatchWpAbility(name, args);
@@ -893,6 +946,7 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
   if (fnName === "wp_rest")       return reason ? `🌐 ${reason.slice(0, 120)}` : `🌐 ${fnArgs.method ?? "GET"} ${fnArgs.endpoint ?? ""}`;
   if (fnName === "wp_cli_remote") return reason ? `🔧 ${reason.slice(0, 120)}` : `🔧 wp ${(fnArgs.command ?? "").slice(0, 100)}`;
   if (fnName === "schedule_task") return reason ? `⏰ ${reason.slice(0, 120)}` : `⏰ Scheduling: ${(fnArgs.label ?? fnArgs.task ?? "").slice(0, 80)}`;
+  if (fnName === "fetch_page")    return reason ? `🌍 ${reason.slice(0, 120)}` : `🌍 Fetching: ${(fnArgs.url ?? "").slice(0, 100)}`;
   if (fnName.startsWith("skill_"))      return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
   if (fnName.startsWith("wp_ability__")) return reason ? `🔮 ${reason.slice(0, 120)}` : `🔮 WP: ${fnName.slice("wp_ability__".length).replace(/_/g, " ")}`;
   return `⚙️ ${reason || fnName}`;
