@@ -29,6 +29,7 @@ const LITELLM_BASE_URL   = process.env.LITELLM_BASE_URL   ?? "http://openclaw-li
 const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY ?? "sk-1234";
 const DEFAULT_MODEL      = process.env.DEFAULT_MODEL      ?? "claude-sonnet-4-6";
 const FALLBACK_MODEL     = process.env.FALLBACK_MODEL     ?? "deepseek-chat";
+const OR_FALLBACK_MODEL  = process.env.OR_FALLBACK_MODEL  ?? "openrouter/deepseek-chat";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "";
 const HTTPS_PROXY    = process.env.HTTPS_PROXY    ?? "";
@@ -963,6 +964,8 @@ async function* runAgent(
   const start        = Date.now();
   let steps          = 0;
   const allTools     = getAllTools();
+  // Pick a fallback from the same provider family
+  const fallback     = model.startsWith("openrouter/") ? OR_FALLBACK_MODEL : FALLBACK_MODEL;
 
   while (steps < MAX_STEPS) {
     steps++;
@@ -990,9 +993,9 @@ async function* runAgent(
           } as any);
         } catch (e2: any) {
           const err2 = String(e2.message ?? e2);
-          if (model !== FALLBACK_MODEL) {
-            console.warn(`[agent] Model ${model} failed (${err2}), trying ${FALLBACK_MODEL}`);
-            yield* runAgent(userMessage, FALLBACK_MODEL, history);
+          if (model !== fallback) {
+            console.warn(`[agent] Model ${model} failed (${err2}), trying ${fallback}`);
+            yield* runAgent(userMessage, fallback, history);
             return;
           }
           yield { type: "result", text: `AI service error: ${err2}`, elapsed: (Date.now() - start) / 1000, model };
@@ -1000,9 +1003,9 @@ async function* runAgent(
         }
       } else {
         const err = String(firstErr.message ?? firstErr);
-        if (model !== FALLBACK_MODEL) {
-          console.warn(`[agent] Model ${model} failed (${err}), trying ${FALLBACK_MODEL}`);
-          yield* runAgent(userMessage, FALLBACK_MODEL, history);
+        if (model !== fallback) {
+          console.warn(`[agent] Model ${model} failed (${err}), trying ${fallback}`);
+          yield* runAgent(userMessage, fallback, history);
           return;
         }
         yield { type: "result", text: `AI service error: ${err}`, elapsed: (Date.now() - start) / 1000, model };

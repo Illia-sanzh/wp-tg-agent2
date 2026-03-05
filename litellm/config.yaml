@@ -74,19 +74,19 @@ model_list:
   # If a slug returns "model not found", check the exact ID at openrouter.ai/models.
   - model_name: openrouter/claude-sonnet-4-6
     litellm_params:
-      model: openrouter/anthropic/claude-sonnet-4-5
+      model: openrouter/anthropic/claude-sonnet-4.6
       api_key: os.environ/OPENROUTER_API_KEY
       max_tokens: 8192
 
   - model_name: openrouter/claude-opus-4-6
     litellm_params:
-      model: openrouter/anthropic/claude-opus-4-5
+      model: openrouter/anthropic/claude-opus-4.6
       api_key: os.environ/OPENROUTER_API_KEY
       max_tokens: 8192
 
   - model_name: openrouter/claude-haiku-4-5
     litellm_params:
-      model: openrouter/anthropic/claude-haiku-4-5
+      model: openrouter/anthropic/claude-haiku-4.5
       api_key: os.environ/OPENROUTER_API_KEY
       max_tokens: 4096
 
@@ -167,6 +167,9 @@ router_settings:
     - gpt-4o: ["claude-sonnet-4-6", "deepseek-chat"]
     - deepseek-chat: ["claude-sonnet-4-6", "gpt-4o"]
     - gemini-2.0-flash: ["claude-sonnet-4-6", "gpt-4o"]
+    - openrouter/claude-sonnet-4-6: ["openrouter/deepseek-chat", "openrouter/gemini-2.0-flash"]
+    - openrouter/claude-opus-4-6: ["openrouter/claude-sonnet-4-6", "openrouter/deepseek-chat"]
+    - openrouter/deepseek-chat: ["openrouter/claude-sonnet-4-6", "openrouter/gemini-2.0-flash"]
 
 litellm_settings:
   # Request timeout in seconds
