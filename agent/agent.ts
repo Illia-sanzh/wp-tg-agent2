@@ -1138,7 +1138,23 @@ async function* runAgent(
       return;
     }
 
-    const msg = response.choices[0].message;
+    const choice = response.choices[0];
+
+    // Detect output truncation — response was cut off mid-generation
+    if (choice.finish_reason === "length") {
+      console.warn(`[agent] Response truncated (finish_reason=length) at step ${steps}`);
+      messages.push({
+        role: "system",
+        content: "YOUR PREVIOUS RESPONSE WAS TRUNCATED because it exceeded the output limit. " +
+          "You MUST split your work into smaller pieces. When writing HTML files, write the CSS/first section " +
+          "with `cat > /tmp/file.html <<'EOF'`, then append more with `cat >> /tmp/file.html <<'EOF'`. " +
+          "Each command must be SHORT ENOUGH to fit in a single response. Try again with a smaller chunk.",
+      } as any);
+      yield { type: "progress", text: "⚠️ Output was truncated, retrying with smaller chunks…" };
+      continue;  // retry the step
+    }
+
+    const msg = choice.message;
     messages.push({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls } as any);
 
     if (!msg.tool_calls?.length) {
@@ -1150,7 +1166,9 @@ async function* runAgent(
     for (const tc of msg.tool_calls) {
       const fnName = tc.function.name;
       let fnArgs: Record<string, any> = {};
-      try { fnArgs = JSON.parse(tc.function.arguments ?? "{}"); } catch {}
+      try { fnArgs = JSON.parse(tc.function.arguments ?? "{}"); } catch (parseErr) {
+        console.warn(`[agent] Failed to parse tool args for ${fnName}: ${String(parseErr).slice(0, 100)}`);
+      }
 
       yield { type: "progress", text: toolLabel(fnName, fnArgs) };
 

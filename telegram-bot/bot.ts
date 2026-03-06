@@ -1,4 +1,5 @@
 import { Bot, Context, session, SessionFlavor } from "grammy";
+import { run, sequentialize } from "@grammyjs/runner";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import axios from "axios";
 import FormData from "form-data";
@@ -45,12 +46,13 @@ interface SessionData {
   skillBrowseStep?:     string;
   skillBrowseFiles?:    string[];
   skillBrowseRepo?:     { owner: string; repo: string; branch: string };
-  // Stop signal for running agent tasks
-  stopRequested?:       boolean;
   cancelledAt?:         number;  // Unix timestamp — skip messages sent before this
 }
 
 type MyContext = Context & SessionFlavor<SessionData>;
+
+// Global stop flags — shared between concurrent handlers (safe for runner)
+const stopFlags = new Map<number, boolean>();  // chatId → stop requested
 
 const KNOWN_MODELS = new Set([
   "auto",
@@ -776,6 +778,16 @@ const bot = new Bot<MyContext>(TELEGRAM_BOT_TOKEN, {
     : {},
 });
 
+// Sequentialize updates per chat, but let /cancel and /stop bypass the queue
+// by giving them a different constraint key so they process concurrently.
+bot.use(sequentialize((ctx) => {
+  const chatId = ctx.chat?.id?.toString() ?? "";
+  const text = ctx.message?.text ?? "";
+  if (text.startsWith("/cancel") || text.startsWith("/stop")) {
+    return `${chatId}:control`;  // different queue — processes immediately
+  }
+  return chatId;  // normal messages wait in sequence
+}));
 bot.use(session({ initial: (): SessionData => ({}) }));
 bot.catch((err) => {
   console.error("[bot] Unhandled error:", err.message ?? err);
@@ -887,20 +899,21 @@ bot.command("model", async ctx => {
 });
 bot.command("cancel", async ctx => {
   if (!isAdmin(ctx)) return;
+  const chatId = ctx.chat.id;
   const wasInFlow = inFlow(ctx);
   clearFlows(ctx);
-  ctx.session.stopRequested = true;
+  stopFlags.set(chatId, true);
   ctx.session.cancelledAt = ctx.message?.date ?? Math.floor(Date.now() / 1000);
   delete ctx.session.history;
   await ctx.reply(wasInFlow
-    ? "🛑 Flow cancelled and conversation history cleared. Queued messages will be skipped."
-    : "🛑 Task cancelled and conversation history cleared. Queued messages will be skipped.");
+    ? "🛑 Flow cancelled and conversation history cleared."
+    : "🛑 Cancelled. Stopping current task and skipping queued messages.");
 });
 bot.command("stop", async ctx => {
   if (!isAdmin(ctx)) return;
-  ctx.session.stopRequested = true;
+  stopFlags.set(ctx.chat.id, true);
   ctx.session.cancelledAt = ctx.message?.date ?? Math.floor(Date.now() / 1000);
-  await ctx.reply("🛑 Stopping current request. Queued messages will be skipped.");
+  await ctx.reply("🛑 Stopping current request…");
 });
 bot.command("tasks", async ctx => {
   if (!isAdmin(ctx)) return;
@@ -1681,7 +1694,8 @@ async function doMcpInstall(ctx: MyContext): Promise<void> {
   }
 }
 async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
-  ctx.session.stopRequested = false;
+  const chatId = ctx.chat!.id;
+  stopFlags.delete(chatId);
   const manualModel = ctx.session.model;
   const history     = ctx.session.history ?? [];
 
@@ -1725,7 +1739,7 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
     let stopped = false;
     await new Promise<void>((resolve) => {
       response.data.on("data", (chunk: Buffer) => {
-        if (ctx.session.stopRequested) {
+        if (stopFlags.get(chatId)) {
           stopped = true;
           response.data.destroy();
           return;
@@ -1756,8 +1770,8 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
       response.data.on("close", resolve);
     });
 
-    if (stopped || ctx.session.stopRequested) {
-      ctx.session.stopRequested = false;
+    if (stopped || stopFlags.get(chatId)) {
+      stopFlags.delete(chatId);
       try { await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, "🛑 Stopped."); } catch {}
       return;
     }
@@ -2002,9 +2016,9 @@ async function main(): Promise<void> {
   console.log(`[bot] Starting (admin users: ${[...ADMIN_USER_IDS].join(", ")})`);
   console.log("[bot] Bot commands registered with Telegram.");
 
-  bot.start({
-    onStart: () => console.log("[bot] Polling started…"),
-  });
+  const runner = run(bot);
+  console.log("[bot] Runner started (concurrent update processing)…");
+  runner.task().then(() => console.log("[bot] Runner stopped."));
 }
 
 main().catch(console.error);
