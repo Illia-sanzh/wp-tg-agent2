@@ -1139,6 +1139,7 @@ async function* runAgent(
     }
 
     const choice = response.choices[0];
+    console.log(`[agent] Step ${steps}: finish_reason=${choice.finish_reason}, tool_calls=${choice.message?.tool_calls?.length ?? 0}, content_len=${choice.message?.content?.length ?? 0}`);
 
     // Detect output truncation — response was cut off mid-generation
     if (choice.finish_reason === "length") {
@@ -1165,9 +1166,14 @@ async function* runAgent(
     let stepHadError = false;
     for (const tc of msg.tool_calls) {
       const fnName = tc.function.name;
+      const rawArgs = tc.function.arguments ?? "";
       let fnArgs: Record<string, any> = {};
-      try { fnArgs = JSON.parse(tc.function.arguments ?? "{}"); } catch (parseErr) {
+      try { fnArgs = JSON.parse(rawArgs || "{}"); } catch (parseErr) {
         console.warn(`[agent] Failed to parse tool args for ${fnName}: ${String(parseErr).slice(0, 100)}`);
+        console.warn(`[agent] Raw args (first 200 chars): ${rawArgs.slice(0, 200)}`);
+      }
+      if (fnName === "run_command" && !fnArgs.command) {
+        console.warn(`[agent] Empty command! Raw args length: ${rawArgs.length}, starts with: ${rawArgs.slice(0, 200)}`);
       }
 
       yield { type: "progress", text: toolLabel(fnName, fnArgs) };
