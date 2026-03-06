@@ -262,7 +262,7 @@ ${skill}
 - NEVER retry the exact same command hoping for a different result.
 - When creating content, ALWAYS create NEW posts/pages. Do NOT search for existing posts unless the user explicitly asked to update a specific one.
 - Prefer \`wp post create --porcelain\` to get an ID, then \`wp post update\` — this is 2 steps, not 5+ steps of searching.
-- CRITICAL: When writing HTML files, ALWAYS split into 2-3 chunks. First write the <style> + first half with \`cat > /tmp/file.html <<'EOF'\`, then append the rest with \`cat >> /tmp/file.html <<'EOF'\`. A single huge command WILL be truncated and fail.
+- CRITICAL: Use the \`write_file\` tool (NOT run_command with cat/heredoc) to create HTML files. Split large HTML into 2-3 write_file calls: first call writes the <style> + first sections, then use append=true for the rest. This prevents output truncation.
 - When updating an existing post's design, do NOT read the old content first — just create the new HTML from scratch and overwrite it.
 - Do NOT fetch the same URL twice.
 
@@ -398,11 +398,32 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "write_file",
+      description:
+        "Write content to a file on the agent server. Use this to create HTML, CSS, or " +
+        "any text files. PREFERRED over run_command with cat/heredoc for writing files — " +
+        "especially large HTML files. You can call this multiple times with append=true " +
+        "to build up a file in chunks.",
+      parameters: {
+        type: "object",
+        properties: {
+          path:    { type: "string", description: "Absolute file path, e.g. /tmp/design.html" },
+          content: { type: "string", description: "The text content to write to the file." },
+          append:  { type: "boolean", description: "If true, append to the file instead of overwriting. Default: false." },
+          reason:  { type: "string", description: "One short sentence describing what this step does." },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "fetch_page",
       description:
         "Fetch a web page and return its cleaned HTML content (scripts, SVGs, iframes, " +
         "base64 data stripped). Use this to study the design/layout of any public website. " +
-        "Returns cleaned HTML truncated to 50000 chars.",
+        "Returns cleaned HTML truncated to 20000 chars.",
       parameters: {
         type: "object",
         properties: {
@@ -981,8 +1002,25 @@ async function uploadMediaToWp(
   }
 }
 
+function writeFile(filePath: string, content: string, append: boolean): string {
+  if (!filePath || !filePath.startsWith("/tmp/")) return "ERROR: Can only write to /tmp/ directory.";
+  if (!content) return "ERROR: No content provided.";
+  try {
+    if (append) {
+      fs.appendFileSync(filePath, content, "utf8");
+    } else {
+      fs.writeFileSync(filePath, content, "utf8");
+    }
+    const stat = fs.statSync(filePath);
+    return `OK: ${append ? "Appended to" : "Wrote"} ${filePath} (${stat.size} bytes total)`;
+  } catch (e: any) {
+    return `ERROR: ${e.message}`;
+  }
+}
+
 async function dispatchTool(name: string, args: Record<string, any>): Promise<string> {
   if (name === "run_command")    return runCommand(args.command ?? "");
+  if (name === "write_file")     return writeFile(args.path ?? "", args.content ?? "", args.append === true);
   if (name === "wp_rest")        return wpRest(args.method ?? "GET", args.endpoint ?? "/", args.body, args.params);
   if (name === "wp_cli_remote")  return wpCliRemote(args.command ?? "");
   if (name === "schedule_task")  return scheduleTaskFn(args.task ?? "", args.run_at, args.cron, args.label);
@@ -1008,6 +1046,7 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
   if (fnName === "wp_rest")       return reason ? `🌐 ${reason.slice(0, 120)}` : `🌐 ${fnArgs.method ?? "GET"} ${fnArgs.endpoint ?? ""}`;
   if (fnName === "wp_cli_remote") return reason ? `🔧 ${reason.slice(0, 120)}` : `🔧 wp ${(fnArgs.command ?? "").slice(0, 100)}`;
   if (fnName === "schedule_task") return reason ? `⏰ ${reason.slice(0, 120)}` : `⏰ Scheduling: ${(fnArgs.label ?? fnArgs.task ?? "").slice(0, 80)}`;
+  if (fnName === "write_file")    return reason ? `📝 ${reason.slice(0, 120)}` : `📝 Writing: ${(fnArgs.path ?? "").slice(0, 100)}`;
   if (fnName === "fetch_page")    return reason ? `🌍 ${reason.slice(0, 120)}` : `🌍 Fetching: ${(fnArgs.url ?? "").slice(0, 100)}`;
   if (fnName.startsWith("skill_"))      return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
   if (fnName.startsWith("wp_ability__")) return reason ? `🔮 ${reason.slice(0, 120)}` : `🔮 WP: ${fnName.slice("wp_ability__".length).replace(/_/g, " ")}`;
@@ -1174,6 +1213,8 @@ async function* runAgent(
       }
       if (fnName === "run_command" && !fnArgs.command) {
         console.warn(`[agent] Empty command! Raw args length: ${rawArgs.length}, starts with: ${rawArgs.slice(0, 200)}`);
+        console.warn(`[agent] Assistant content: ${(msg.content ?? "(none)").slice(0, 500)}`);
+        console.warn(`[agent] All tool_calls: ${JSON.stringify(msg.tool_calls?.map(t => ({ name: t.function.name, argsLen: t.function.arguments?.length ?? 0 })))}`);
       }
 
       yield { type: "progress", text: toolLabel(fnName, fnArgs) };
@@ -1355,7 +1396,7 @@ expressApp.post("/reload-skills", (_req, res) => {
 
 // ─── Skill CRUD ────────────────────────────────────────────────────────────────
 
-const BUILTIN_TOOL_NAMES      = new Set(["run_command", "wp_rest", "wp_cli_remote", "schedule_task"]);
+const BUILTIN_TOOL_NAMES      = new Set(["run_command", "write_file", "wp_rest", "wp_cli_remote", "schedule_task"]);
 const FORBIDDEN_SKILL_COMMANDS = [
   "wp db drop", "wp db reset", "wp site empty", "wp eval", "wp eval-file", "wp shell",
   "rm -rf /", "mkfs", "dd if=", "> /dev/sda", "chmod 777 /",
