@@ -28,8 +28,8 @@ import { getProxyForUrl } from "proxy-from-env";
 const LITELLM_BASE_URL   = process.env.LITELLM_BASE_URL   ?? "http://openclaw-litellm:4000/v1";
 const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY ?? "sk-1234";
 const DEFAULT_MODEL      = process.env.DEFAULT_MODEL      ?? "claude-sonnet-4-6";
-const FALLBACK_MODEL     = process.env.FALLBACK_MODEL     ?? "deepseek-chat";
-const OR_FALLBACK_MODEL  = process.env.OR_FALLBACK_MODEL  ?? "openrouter/deepseek-chat";
+const FALLBACK_MODEL     = process.env.FALLBACK_MODEL     ?? "gpt-4o";
+const OR_FALLBACK_MODEL  = process.env.OR_FALLBACK_MODEL  ?? "openrouter/gpt-4o";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "";
 const HTTPS_PROXY    = process.env.HTTPS_PROXY    ?? "";
@@ -262,6 +262,7 @@ ${skill}
 - NEVER retry the exact same command hoping for a different result.
 - When creating content, ALWAYS create NEW posts/pages. Do NOT search for existing posts unless the user explicitly asked to update a specific one.
 - Prefer \`wp post create --porcelain\` to get an ID, then \`wp post update\` — this is 2 steps, not 5+ steps of searching.
+- When writing large HTML files (100+ lines), split into chunks: first \`cat > /tmp/file.html <<'EOF'\` with the first half, then \`cat >> /tmp/file.html <<'EOF'\` to append the rest. This prevents output truncation.
 
 ## WordPress Mode: ${wpMode.toUpperCase()}
 ${wpMode === "local"
@@ -633,6 +634,7 @@ const FORBIDDEN_COMMANDS = [
 ];
 
 function runCommand(command: string): string {
+  if (!command || !command.trim()) return "ERROR: No command provided. Please specify a bash command to execute.";
   const cmdLower = command.toLowerCase();
   for (const f of FORBIDDEN_COMMANDS) {
     if (cmdLower.includes(f)) return `ERROR: Command '${f}' is blocked for safety reasons.`;
@@ -1067,6 +1069,7 @@ async function* runAgent(
   const start        = Date.now();
   let steps          = 0;
   let consecutiveErrors = 0;
+  let recentErrors: string[] = [];  // collect last few error messages
   let lastToolSig    = "";          // detect repeated identical tool calls
   let repeatCount    = 0;
   const allTools     = getAllTools();
@@ -1086,7 +1089,7 @@ async function* runAgent(
         tool_choice: "auto",
         // @ts-ignore — LiteLLM extension: system passed as extra field
         system:      fullSystemPrompt(),
-        max_tokens:  8192,
+        max_tokens:  16384,
       } as any);
     } catch (firstErr: any) {
       // Some providers don't accept the non-standard 'system' kwarg; prepend it
@@ -1147,7 +1150,11 @@ async function* runAgent(
       messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult } as any);
 
       // Track errors
-      if (String(toolResult).startsWith("ERROR")) stepHadError = true;
+      if (String(toolResult).startsWith("ERROR")) {
+        stepHadError = true;
+        recentErrors.push(`${fnName}: ${String(toolResult).slice(0, 300)}`);
+        if (recentErrors.length > 6) recentErrors.shift();
+      }
 
       // Track repeated identical calls (sign of a loop)
       const sig = `${fnName}:${tc.function.arguments ?? ""}`;
@@ -1163,9 +1170,12 @@ async function* runAgent(
     consecutiveErrors = stepHadError ? consecutiveErrors + 1 : 0;
     if (consecutiveErrors >= 4) {
       console.warn(`[agent] Bailing: ${consecutiveErrors} consecutive error steps`);
+      const errorDetail = recentErrors.length
+        ? "\n\nErrors encountered:\n" + recentErrors.map((e, i) => `${i + 1}. ${e}`).join("\n")
+        : "";
       yield {
         type: "result",
-        text: "I've encountered errors on multiple consecutive attempts. Rather than keep trying, here's what went wrong — please check the approach and try again with more specific instructions.",
+        text: `I've encountered errors on ${consecutiveErrors} consecutive attempts and stopped to avoid wasting time.${errorDetail}\n\nPlease check the approach and try again with more specific instructions.`,
         elapsed: (Date.now() - start) / 1000, model,
       };
       return;
@@ -1173,10 +1183,11 @@ async function* runAgent(
 
     // Repeated tool call detection — bail if same exact call 3+ times
     if (repeatCount >= 3) {
-      console.warn(`[agent] Bailing: same tool call repeated ${repeatCount + 1} times`);
+      const repeatedAction = lastToolSig.split(":")[0] || "unknown";
+      console.warn(`[agent] Bailing: same tool call repeated ${repeatCount + 1} times (${repeatedAction})`);
       yield {
         type: "result",
-        text: "I appear to be stuck in a loop repeating the same action. Let me stop here — could you rephrase what you'd like me to do?",
+        text: `I got stuck in a loop — repeated the same "${repeatedAction}" call ${repeatCount + 1} times. Could you rephrase what you'd like me to do?`,
         elapsed: (Date.now() - start) / 1000, model,
       };
       return;
