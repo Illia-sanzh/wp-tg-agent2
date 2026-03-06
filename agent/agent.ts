@@ -271,9 +271,23 @@ Use the \`schedule_task\` tool when the user asks to do something at a specific 
 
 ## Fetching Web Pages
 Use the \`fetch_page\` tool to download and inspect any public webpage's HTML/CSS.
-This is useful for copying designs, analysing page layouts, or extracting content.
-When asked to replicate a design, fetch the page first, study its HTML/CSS structure,
-then create clean HTML that captures the same visual layout and style.
+This is useful for studying designs, analysing page layouts, or extracting content.
+When asked to replicate a design:
+1. Fetch the page and study its structure, colors, typography, spacing, and layout patterns
+2. Create clean standalone HTML+CSS that captures the same visual design
+3. Convert to WordPress blocks (use skill_convert if available, otherwise wp:html wrapper)
+4. Insert into WordPress and verify
+
+## Web Design Quality
+When creating pages or designs, you are a professional web designer. Follow these principles:
+- Use fluid typography with clamp() — never fixed pixel sizes
+- Use layered box-shadows (2-3 layers) for depth
+- Limit color palette: 1 primary hue + neutral scale
+- Generous whitespace: 4-6rem section padding, 1.5-2rem card gaps
+- Constrain body text to ~65ch max width for readability
+- All hover states need smooth transitions (150ms)
+- Responsive by default: CSS Grid auto-fit, clamp() values
+- The web-design and greenshift-blocks knowledge skills (if loaded) have full design system details
 
 ## Custom Skills
 Additional tool functions may be available below if YAML skill files are present in
@@ -376,9 +390,9 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "fetch_page",
       description:
-        "Fetch a web page and return its HTML content. Use this to inspect the design, " +
-        "structure, or content of any public website. Useful for copying layouts, " +
-        "analysing page structure, or extracting text. Returns raw HTML (truncated to 30000 chars).",
+        "Fetch a web page and return its cleaned HTML content (scripts, SVGs, iframes, " +
+        "base64 data stripped). Use this to study the design/layout of any public website. " +
+        "Returns cleaned HTML truncated to 50000 chars.",
       parameters: {
         type: "object",
         properties: {
@@ -641,7 +655,34 @@ function runCommand(command: string): string {
   }
 }
 
-const MAX_FETCH_CHARS = 30_000;
+const MAX_FETCH_CHARS = 50_000;
+
+/** Strip noise from HTML to extract design-relevant content */
+function cleanHtmlForDesign(raw: string): string {
+  let html = raw;
+  // Remove script tags and their content
+  html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+  // Remove noscript
+  html = html.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, "");
+  // Remove SVG (often huge inline icons) — keep a marker
+  html = html.replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '<svg data-removed="true"/>');
+  // Remove HTML comments (except WordPress block comments)
+  html = html.replace(/<!--(?!\s*\/?wp:)[^]*?-->/g, "");
+  // Remove data: URIs (base64 images bloat)
+  html = html.replace(/data:[a-z/]+;base64,[A-Za-z0-9+/=]+/g, "data:removed");
+  // Remove tracking pixels and ad iframes
+  html = html.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, "");
+  // Remove JSON-LD structured data
+  html = html.replace(/<script\s+type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi, "");
+  // Remove link preloads/prefetches (noise for design analysis)
+  html = html.replace(/<link\b[^>]*rel=["'](?:preload|prefetch|dns-prefetch|preconnect)["'][^>]*\/?>/gi, "");
+  // Remove meta tags (keep charset and viewport only)
+  html = html.replace(/<meta\b(?![^>]*(?:charset|viewport))[^>]*\/?>/gi, "");
+  // Collapse excessive whitespace
+  html = html.replace(/\n\s*\n\s*\n/g, "\n\n");
+  html = html.replace(/[ \t]{4,}/g, "  ");
+  return html.trim();
+}
 
 async function fetchPage(url: string): Promise<string> {
   try {
@@ -651,17 +692,18 @@ async function fetchPage(url: string): Promise<string> {
       timeout: 30_000,
       responseType: "text",
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; WPAgent/1.0)",
-        "Accept": "text/html,application/xhtml+xml,*/*",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
       },
-      // Follow redirects
       maxRedirects: 5,
     });
-    let html = typeof resp.data === "string" ? resp.data : String(resp.data);
+    const rawHtml = typeof resp.data === "string" ? resp.data : String(resp.data);
+    let html = cleanHtmlForDesign(rawHtml);
     if (html.length > MAX_FETCH_CHARS) {
-      html = html.slice(0, MAX_FETCH_CHARS) + `\n\n... [truncated at ${MAX_FETCH_CHARS} chars, full page is ${resp.data.length} chars]`;
+      html = html.slice(0, MAX_FETCH_CHARS) + `\n\n... [truncated at ${MAX_FETCH_CHARS} chars, full page is ${rawHtml.length} chars]`;
     }
-    return html;
+    return `<!-- Fetched from: ${url} -->\n<!-- Original size: ${rawHtml.length} chars, cleaned: ${html.length} chars -->\n\n${html}`;
   } catch (e: any) {
     const status = e?.response?.status;
     if (status) return `ERROR: HTTP ${status} fetching ${url}`;
@@ -1034,7 +1076,7 @@ async function* runAgent(
         tool_choice: "auto",
         // @ts-ignore — LiteLLM extension: system passed as extra field
         system:      fullSystemPrompt(),
-        max_tokens:  4096,
+        max_tokens:  8192,
       } as any);
     } catch (firstErr: any) {
       // Some providers don't accept the non-standard 'system' kwarg; prepend it
@@ -1043,7 +1085,7 @@ async function* runAgent(
         systemInjected = true;
         try {
           response = await client.chat.completions.create({
-            model, messages, tools: allTools, tool_choice: "auto", max_tokens: 4096,
+            model, messages, tools: allTools, tool_choice: "auto", max_tokens: 8192,
           } as any);
         } catch (e2: any) {
           const err2 = String(e2.message ?? e2);

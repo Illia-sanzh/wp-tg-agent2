@@ -250,12 +250,82 @@ rm /tmp/fixed-content.html
 
 ## AI Content Generation
 
-Use the WordPress AI Client SDK for content generation:
-- Generate blog posts, product descriptions, alt text, excerpts
-- Create images for posts and products
-- The SDK is provider-agnostic (OpenAI, Anthropic, Google)
-
 When the user asks to "write a post about X" or "generate content for Y", generate the content yourself using your own knowledge, format it with proper WordPress blocks, then create the post. Always verify the result.
+
+## Web Design & Page Creation Workflow
+
+When the user asks you to create a page, replicate a design, or build a layout, follow this workflow EXACTLY. Do not skip steps.
+
+### Step 1 — Research (if referencing an existing site)
+Use `fetch_page` to download the target page's HTML. Extract:
+- Layout structure (hero, features, CTA, footer, etc.)
+- Color palette (primary, secondary, accent, neutrals)
+- Typography choices (font families, sizes, weights)
+- Spacing rhythm (section padding, card gaps, element margins)
+- Visual effects (shadows, gradients, border radius, animations)
+
+Study the DESIGN PATTERNS, not the content. You will create original content.
+
+### Step 2 — Create clean, standalone HTML
+Write complete, production-quality HTML with embedded `<style>` tags. STRICT RULES:
+
+1. **Vanilla HTML + CSS only** — no React, TypeScript, Tailwind, or frameworks
+2. **Single HTML file** — all CSS in `<style>` tags within the file
+3. **Unique class prefixes** — minimum 4 letters, e.g. `.grdp-hero`, `.grdp-card`
+4. **NEVER style `body`, `*`, or `:root`** — only your own prefixed classes
+5. **Semantic HTML**: `<section>`, `<article>`, `<header>`, `<nav>`, `<footer>`
+6. **Responsive**: use `clamp()` for font sizes/spacing, CSS Grid `auto-fit` for layouts
+7. **Headings/paragraphs MUST have** explicit `margin-top` and `margin-bottom`
+8. **Lists MUST have** `list-style-position: inside; margin-left: 0; padding-left: 0`
+9. **No script-generated content** — all text must be in the DOM HTML
+10. **Images**: use `https://picsum.photos/seed/KEYWORD/WIDTH/HEIGHT` for consistent placeholders
+11. **Full-width sections**: `<div class="prefix-section"><div class="prefix-wrap" style="width:min(1200px,100%-3rem);margin:0 auto">content</div></div>`
+
+**Design Quality Standards** (the web-design knowledge skill has full details):
+- Use a fluid typography scale (clamp-based) — hero ~3rem, body ~1rem
+- Use layered box-shadows (2-3 layers), never single-layer
+- Limit palette to 1 primary hue + neutrals; generate 10-stop HSL scale
+- Section padding: 4-6rem vertical. Card gaps: 1.5-2rem.
+- Max line length: ~65ch for readable body text
+- Hover transitions: `transform 150ms` + shadow lift
+- Contrast ratio: 4.5:1 minimum for body text
+
+### Step 3 — Convert to Greenshift blocks (if `skill_convert` tool is available)
+If the `skill_convert` tool is installed:
+1. Write the HTML to a temp file:
+   ```bash
+   cat > /tmp/page-design.html <<'HTMLEOF'
+   (your full HTML from step 2)
+   HTMLEOF
+   ```
+2. Run: `skill_convert` with `input_file: "/tmp/page-design.html"`
+3. The converter outputs WordPress block markup with Greenshift elements and a Style Manager
+4. Clean up: `rm /tmp/page-design.html`
+
+If `skill_convert` is NOT available, wrap in a Custom HTML block:
+```html
+<!-- wp:html -->
+<style>/* all your CSS */</style>
+<div class="your-layout"><!-- all your HTML --></div>
+<!-- /wp:html -->
+```
+
+### Step 4 — Insert into WordPress
+```bash
+cat > /tmp/page-content.html <<'CONTENT'
+(block markup from step 3)
+CONTENT
+POST_ID=$(wp post create --post_type=page --post_title="Page Title" --post_status=draft --porcelain --path=/wordpress --allow-root)
+wp post update $POST_ID /tmp/page-content.html --path=/wordpress --allow-root
+rm /tmp/page-content.html
+```
+
+### Step 5 — Verify and Report
+```bash
+wp post get $POST_ID --field=content --path=/wordpress --allow-root | head -30
+```
+Check that the content starts with a block comment (`<!-- wp:`). If it's raw HTML without block wrappers, something went wrong — redo step 3.
+Report the page URL and title to the user.
 
 ---
 
