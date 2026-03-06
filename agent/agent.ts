@@ -262,7 +262,9 @@ ${skill}
 - NEVER retry the exact same command hoping for a different result.
 - When creating content, ALWAYS create NEW posts/pages. Do NOT search for existing posts unless the user explicitly asked to update a specific one.
 - Prefer \`wp post create --porcelain\` to get an ID, then \`wp post update\` — this is 2 steps, not 5+ steps of searching.
-- When writing large HTML files (100+ lines), split into chunks: first \`cat > /tmp/file.html <<'EOF'\` with the first half, then \`cat >> /tmp/file.html <<'EOF'\` to append the rest. This prevents output truncation.
+- CRITICAL: When writing HTML files, ALWAYS split into 2-3 chunks. First write the <style> + first half with \`cat > /tmp/file.html <<'EOF'\`, then append the rest with \`cat >> /tmp/file.html <<'EOF'\`. A single huge command WILL be truncated and fail.
+- When updating an existing post's design, do NOT read the old content first — just create the new HTML from scratch and overwrite it.
+- Do NOT fetch the same URL twice.
 
 ## WordPress Mode: ${wpMode.toUpperCase()}
 ${wpMode === "local"
@@ -744,9 +746,11 @@ async function wpRest(
     auth = { username: WP_ADMIN_USER, password: WP_ADMIN_PASSWORD };
   }
 
-  const url = WP_URL.replace(/\/$/, "") + "/wp-json" + endpoint;
+  // Use host.docker.internal to bypass the proxy (WP is on the same Docker host)
+  const baseUrl = "http://host.docker.internal";
+  const url = baseUrl + "/wp-json" + endpoint;
   try {
-    const resp = await httpRequest({ method: method as any, url, data: body, params, headers, auth, timeout: 30_000 });
+    const resp = await axios.request({ method: method as any, url, data: body, params, headers, auth, timeout: 30_000, proxy: false });
     let text = typeof resp.data === "string" ? resp.data : JSON.stringify(resp.data);
     if (text.length > MAX_OUTPUT_CHARS) text = text.slice(0, MAX_OUTPUT_CHARS) + "... [truncated]";
     return `HTTP ${resp.status}\n${text}`;
