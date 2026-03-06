@@ -266,14 +266,15 @@ When the user asks to "write a post about X" or "generate content for Y", genera
 When the user asks you to create a page, replicate a design, or build a layout, follow this workflow EXACTLY. Do not skip steps.
 
 ### Step 1 — Research (if referencing an existing site)
-Use `fetch_page` to download the target page's HTML. Extract:
-- Layout structure (hero, features, CTA, footer, etc.)
-- Color palette (primary, secondary, accent, neutrals)
-- Typography choices (font families, sizes, weights)
-- Spacing rhythm (section padding, card gaps, element margins)
-- Visual effects (shadows, gradients, border radius, animations)
+Use `fetch_page` to download the target page's HTML. Study and extract:
+- **Layout geometry**: are grids symmetric or asymmetric? (2/3+1/3? bento? jigsaw?) Count exact column ratios per row.
+- **Section rhythm**: which sections are dark vs light? full-bleed vs contained? How many total sections?
+- **Color palette**: exact primary brand color, dark section background, accent colors, text colors
+- **Typography**: font weight (700? 800?), size hierarchy, letter-spacing, gradient text effects
+- **Animations**: hover effects, scroll reveals, moving gradients, floating elements
+- **Card patterns**: do cards overlap? have different heights? use background images?
 
-Study the DESIGN PATTERNS, not the content. You will create original content.
+Recreate the EXACT layout geometry and section flow — do NOT simplify a jigsaw grid into boring equal columns.
 
 ### Step 2 — Create clean, standalone HTML
 Write complete, production-quality HTML with embedded `<style>` tags. STRICT RULES:
@@ -291,13 +292,14 @@ Write complete, production-quality HTML with embedded `<style>` tags. STRICT RUL
 11. **Full-width sections**: `<div class="prefix-section"><div class="prefix-wrap" style="width:min(1200px,100%-3rem);margin:0 auto">content</div></div>`
 
 **Design Quality Standards** (the web-design knowledge skill has full details):
-- Use a fluid typography scale (clamp-based) — hero ~3rem, body ~1rem
-- Use layered box-shadows (2-3 layers), never single-layer
-- Limit palette to 1 primary hue + neutrals; generate 10-stop HSL scale
-- Section padding: 4-6rem vertical. Card gaps: 1.5-2rem.
+- **Varied layouts**: jigsaw grids (2/3+1/3), bento grids, asymmetric splits — NEVER all-equal columns
+- **Dark/light contrast**: alternate dark and light sections for dramatic rhythm
+- **Animations**: scroll-reveal (IntersectionObserver), hover lift effects, animated gradient backgrounds
+- **Dramatic hero**: full-bleed gradient, bold large heading (gradient text if appropriate), animated bg
+- Fluid typography scale (clamp-based) — hero ~3rem, body ~1rem
+- Layered box-shadows (2-3 layers), never single-layer
 - Max line length: ~65ch for readable body text
-- Hover transitions: `transform 150ms` + shadow lift
-- Contrast ratio: 4.5:1 minimum for body text
+- Hover transitions: `transform 150ms` + shadow lift on cards
 
 ### Step 3 — Convert to Greenshift blocks (if `skill_convert` tool is available)
 If the `skill_convert` tool is installed:
