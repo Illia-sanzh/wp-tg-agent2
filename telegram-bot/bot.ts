@@ -47,6 +47,7 @@ interface SessionData {
   skillBrowseRepo?:     { owner: string; repo: string; branch: string };
   // Stop signal for running agent tasks
   stopRequested?:       boolean;
+  cancelledAt?:         number;  // Unix timestamp — skip messages sent before this
 }
 
 type MyContext = Context & SessionFlavor<SessionData>;
@@ -889,15 +890,17 @@ bot.command("cancel", async ctx => {
   const wasInFlow = inFlow(ctx);
   clearFlows(ctx);
   ctx.session.stopRequested = true;
+  ctx.session.cancelledAt = ctx.message?.date ?? Math.floor(Date.now() / 1000);
   delete ctx.session.history;
   await ctx.reply(wasInFlow
-    ? "🛑 Flow cancelled and conversation history cleared."
-    : "🛑 Task cancelled and conversation history cleared.");
+    ? "🛑 Flow cancelled and conversation history cleared. Queued messages will be skipped."
+    : "🛑 Task cancelled and conversation history cleared. Queued messages will be skipped.");
 });
 bot.command("stop", async ctx => {
   if (!isAdmin(ctx)) return;
   ctx.session.stopRequested = true;
-  await ctx.reply("🛑 Stopping current request…");
+  ctx.session.cancelledAt = ctx.message?.date ?? Math.floor(Date.now() / 1000);
+  await ctx.reply("🛑 Stopping current request. Queued messages will be skipped.");
 });
 bot.command("tasks", async ctx => {
   if (!isAdmin(ctx)) return;
@@ -1796,6 +1799,11 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
 bot.on("message:text", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
 
+  // Skip messages that were queued before a /cancel or /stop
+  if (ctx.session.cancelledAt && ctx.message.date <= ctx.session.cancelledAt) {
+    return;
+  }
+
   // Route to active multi-step flows first
   if (await handleSkillDeleteConfirm(ctx)) return;
   if (await handleSkillCreateStep(ctx))    return;
@@ -1822,6 +1830,7 @@ bot.on("message:text", async ctx => {
 });
 bot.on("message:voice", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
+  if (ctx.session.cancelledAt && ctx.message.date <= ctx.session.cancelledAt) return;
 
   const voice     = ctx.message.voice;
   const statusMsg = await ctx.reply("🎙️ Transcribing voice message…");
