@@ -256,6 +256,13 @@ ${skill}
 12. If WP-CLI fails with a database error, switch to wp_rest immediately.
 13. NEVER run: nmap, nc, netstat, ss, mysqladmin, mysqld, service mysql, systemctl mysql, mysql -u, mysqld_safe, ps aux | grep mysql.
 
+## Efficiency Rules (IMPORTANT)
+- You have a LIMITED step budget. Do NOT waste steps searching, listing, or exploring when you can act directly.
+- If a command fails, try ONE different approach. If that also fails, explain the problem and stop.
+- NEVER retry the exact same command hoping for a different result.
+- When creating content, ALWAYS create NEW posts/pages. Do NOT search for existing posts unless the user explicitly asked to update a specific one.
+- Prefer \`wp post create --porcelain\` to get an ID, then \`wp post update\` — this is 2 steps, not 5+ steps of searching.
+
 ## WordPress Mode: ${wpMode.toUpperCase()}
 ${wpMode === "local"
   ? `You have direct WP-CLI access. Use: wp --path=${WP_PATH} --allow-root`
@@ -1059,6 +1066,9 @@ async function* runAgent(
   let systemInjected = false;
   const start        = Date.now();
   let steps          = 0;
+  let consecutiveErrors = 0;
+  let lastToolSig    = "";          // detect repeated identical tool calls
+  let repeatCount    = 0;
   const allTools     = getAllTools();
   // Pick a fallback from the same provider family
   const fallback     = model.startsWith("openrouter/") ? OR_FALLBACK_MODEL : FALLBACK_MODEL;
@@ -1122,6 +1132,7 @@ async function* runAgent(
       return;
     }
 
+    let stepHadError = false;
     for (const tc of msg.tool_calls) {
       const fnName = tc.function.name;
       let fnArgs: Record<string, any> = {};
@@ -1134,6 +1145,49 @@ async function* runAgent(
       console.log(`[agent]   → ${String(toolResult).slice(0, 200)}`);
 
       messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult } as any);
+
+      // Track errors
+      if (String(toolResult).startsWith("ERROR")) stepHadError = true;
+
+      // Track repeated identical calls (sign of a loop)
+      const sig = `${fnName}:${tc.function.arguments ?? ""}`;
+      if (sig === lastToolSig) {
+        repeatCount++;
+      } else {
+        lastToolSig = sig;
+        repeatCount = 0;
+      }
+    }
+
+    // Consecutive error detection — bail if 4+ steps in a row all errored
+    consecutiveErrors = stepHadError ? consecutiveErrors + 1 : 0;
+    if (consecutiveErrors >= 4) {
+      console.warn(`[agent] Bailing: ${consecutiveErrors} consecutive error steps`);
+      yield {
+        type: "result",
+        text: "I've encountered errors on multiple consecutive attempts. Rather than keep trying, here's what went wrong — please check the approach and try again with more specific instructions.",
+        elapsed: (Date.now() - start) / 1000, model,
+      };
+      return;
+    }
+
+    // Repeated tool call detection — bail if same exact call 3+ times
+    if (repeatCount >= 3) {
+      console.warn(`[agent] Bailing: same tool call repeated ${repeatCount + 1} times`);
+      yield {
+        type: "result",
+        text: "I appear to be stuck in a loop repeating the same action. Let me stop here — could you rephrase what you'd like me to do?",
+        elapsed: (Date.now() - start) / 1000, model,
+      };
+      return;
+    }
+
+    // Budget warning — inject a nudge when getting close to step limit
+    if (steps === MAX_STEPS - 3) {
+      messages.push({
+        role: "system",
+        content: "WARNING: You are running low on steps (3 remaining). Wrap up now: finish the current operation, report what you've done, and stop. Do NOT start new searches or explorations.",
+      } as any);
     }
   }
 

@@ -191,6 +191,15 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | \
 
 **Never start or restart system services.** If MySQL, Apache, nginx, php-fpm, or any service appears to be down, report the status to the user in plain language and stop. Never run `service X start`, `systemctl start X`, or any daemon command. Starting services is outside the agent's scope and can cause data corruption.
 
+## Creating vs Updating Content
+
+**Default: ALWAYS create a NEW page/post** unless the user explicitly names an existing page to update (e.g. "update the About page" or "edit post ID 42").
+- Do NOT search for existing posts to "find the right one" — just create new.
+- Do NOT spend multiple steps listing/searching posts unless the user asked you to.
+- If you need a post ID, create the post first with `--porcelain` and capture it.
+- If a command fails, try a different approach immediately — do not retry the same failing command more than once.
+- If you're unsure what the user wants, ASK instead of guessing and searching.
+
 ## Content Formatting Rules
 
 When creating posts, pages, or product descriptions, follow these rules strictly:
