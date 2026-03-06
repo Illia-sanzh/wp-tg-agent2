@@ -173,6 +173,6 @@ router_settings:
 
 litellm_settings:
   # Request timeout in seconds
-  request_timeout: 120
+  request_timeout: 300
   # Allow empty API keys (LiteLLM will just skip that provider)
   drop_params: true

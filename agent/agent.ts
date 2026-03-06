@@ -92,7 +92,7 @@ async function httpRequest(config: AxiosRequestConfig): Promise<any> {
 const client = new OpenAI({
   apiKey:     LITELLM_MASTER_KEY,
   baseURL:    LITELLM_BASE_URL,
-  timeout:    120_000,
+  timeout:    300_000,
   maxRetries: 0,
 });
 
@@ -664,7 +664,7 @@ function runCommand(command: string): string {
   }
 }
 
-const MAX_FETCH_CHARS = 50_000;
+const MAX_FETCH_CHARS = 20_000;
 
 /** Strip noise from HTML to extract design-relevant content */
 function cleanHtmlForDesign(raw: string): string {
@@ -687,6 +687,13 @@ function cleanHtmlForDesign(raw: string): string {
   html = html.replace(/<link\b[^>]*rel=["'](?:preload|prefetch|dns-prefetch|preconnect)["'][^>]*\/?>/gi, "");
   // Remove meta tags (keep charset and viewport only)
   html = html.replace(/<meta\b(?![^>]*(?:charset|viewport))[^>]*\/?>/gi, "");
+  // Remove inline style attributes (we want structure, not inline CSS)
+  html = html.replace(/\s+style="[^"]*"/gi, "");
+  html = html.replace(/\s+style='[^']*'/gi, "");
+  // Remove hidden elements
+  html = html.replace(/<[^>]+(?:aria-hidden="true"|hidden)[^>]*>[\s\S]*?<\/[^>]+>/gi, "");
+  // Remove empty class/id attributes
+  html = html.replace(/\s+(?:class|id)=""/g, "");
   // Collapse excessive whitespace
   html = html.replace(/\n\s*\n\s*\n/g, "\n\n");
   html = html.replace(/[ \t]{4,}/g, "  ");
