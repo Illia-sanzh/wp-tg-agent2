@@ -468,7 +468,7 @@ function loadMarkdownSkills(): string {
   if (!fs.existsSync(SKILLS_DIR)) return "";
   const parts: string[] = [];
   try {
-    for (const file of fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith(".md")).sort()) {
+    for (const file of fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith(".md") && !f.toLowerCase().startsWith("readme")).sort()) {
       try {
         const content = fs.readFileSync(path.join(SKILLS_DIR, file), "utf8").trim();
         if (content) parts.push(`### Skill: ${file.replace(/\.md$/, "")}\n\n${content}`);
