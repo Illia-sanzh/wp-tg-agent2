@@ -1534,15 +1534,28 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   // Save to thread history
   appendToThread(channel, threadKey, "user", userMessage);
 
-  // Forward to Telegram as CRM notification
-  const tgNotification = [
-    `📩 *Inbound: ${channel}* (${event})`,
-    title ? `📝 ${title}` : "",
-    author?.name ? `👤 ${author.name}` : "",
-    metadata?.link ? `🔗 ${metadata.link}` : "",
-    content ? `\n${content.slice(0, 500)}${content.length > 500 ? "…" : ""}` : "",
-  ].filter(Boolean).join("\n");
-  notifyTelegram(tgNotification).catch(() => {});
+  // Forward to Telegram as CRM notification (structured, plain text — no Markdown)
+  const eventLabels: Record<string, string> = {
+    new_topic:        "🆕 New post",
+    new_comment:      "💬 New comment",
+    vote_milestone:   "🗳️ Vote milestone",
+    urgent_priority:  "🚨 Urgent priority",
+    bug_type:         "🐛 Marked as Bug",
+  };
+  const sectionLabel = metadata?.section === "feature_requests" ? "Feature Requests" : "Forum";
+  const heading = `${eventLabels[event] ?? `📩 ${event}`} in ${sectionLabel}`;
+  const tgLines: string[] = [heading, ""];
+  if (title)              tgLines.push(`📝 Title: ${title}`);
+  if (metadata?.category) tgLines.push(`📁 Category: ${metadata.category}`);
+  if (metadata?.link)     tgLines.push(`🔗 Link: ${metadata.link}`);
+  if (metadata?.post_id)  tgLines.push(`⚙️ Post ID: ${metadata.post_id}`);
+  if (author?.name)       tgLines.push(`👤 Author: ${author.name}`);
+  if (metadata?.vote_count) tgLines.push(`🔢 Votes: ${metadata.vote_count}`);
+  if (content) {
+    tgLines.push("");
+    tgLines.push(`📰 Content: ${content.slice(0, 500)}${content.length > 500 ? "…" : ""}`);
+  }
+  notifyTelegram(tgLines.join("\n")).catch(() => {});
 
   // If auto_respond is false, just acknowledge receipt
   if (!auto_respond) {
@@ -1587,8 +1600,15 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
 
   // Notify Telegram of the agent's response
   if (resultText && resultText !== "(no response)") {
-    const tgResponse = `🤖 *Agent replied* (${channel}/${event}):\n${resultText.slice(0, 3500)}`;
-    notifyTelegram(tgResponse).catch(() => {});
+    const respLines: string[] = [
+      `🤖 Agent Response`,
+      "",
+    ];
+    if (title) respLines.push(`📝 Topic: ${title}`);
+    if (metadata?.link) respLines.push(`🔗 Link: ${metadata.link}`);
+    respLines.push("");
+    respLines.push(resultText.slice(0, 3500));
+    notifyTelegram(respLines.join("\n")).catch(() => {});
   }
 
   res.json({
