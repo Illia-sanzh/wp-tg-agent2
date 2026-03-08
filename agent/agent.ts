@@ -54,6 +54,73 @@ const TELEGRAM_ADMIN_USER_ID = process.env.TELEGRAM_ADMIN_USER_ID ?? "";
 const SKILLS_DIR  = "/app/config/skills";
 const DATA_DIR    = "/app/data";
 const SCHEDULE_DB = path.join(DATA_DIR, "schedules.db");
+const THREADS_DB  = path.join(DATA_DIR, "threads.json");
+
+// ─── Thread-based conversation history (for forum, github, etc.) ─────────────
+interface ThreadEntry {
+  role: "user" | "assistant" | "system";
+  content: string;
+}
+interface ThreadRecord {
+  channel: string;
+  thread_id: string;
+  history: ThreadEntry[];
+  updated: number;  // epoch ms
+}
+
+const threadStore = new Map<string, ThreadRecord>();
+const MAX_THREAD_HISTORY = 50;  // messages per thread (25 turns)
+const MAX_THREADS = 500;
+
+function loadThreads(): void {
+  try {
+    if (fs.existsSync(THREADS_DB)) {
+      const data = JSON.parse(fs.readFileSync(THREADS_DB, "utf8"));
+      for (const [k, v] of Object.entries(data)) threadStore.set(k, v as ThreadRecord);
+      console.log(`[threads] Loaded ${threadStore.size} thread(s) from disk`);
+    }
+  } catch (e) { console.warn(`[threads] Failed to load: ${e}`); }
+}
+
+function saveThreads(): void {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const obj: Record<string, ThreadRecord> = {};
+    for (const [k, v] of threadStore) obj[k] = v;
+    fs.writeFileSync(THREADS_DB, JSON.stringify(obj), "utf8");
+  } catch (e) { console.warn(`[threads] Failed to save: ${e}`); }
+}
+
+function getThread(channel: string, threadId: string): ThreadRecord {
+  const key = `${channel}:${threadId}`;
+  if (!threadStore.has(key)) {
+    threadStore.set(key, { channel, thread_id: threadId, history: [], updated: Date.now() });
+  }
+  return threadStore.get(key)!;
+}
+
+function appendToThread(channel: string, threadId: string, role: "user" | "assistant", content: string): void {
+  const thread = getThread(channel, threadId);
+  thread.history.push({ role, content });
+  if (thread.history.length > MAX_THREAD_HISTORY) {
+    thread.history = thread.history.slice(-MAX_THREAD_HISTORY);
+  }
+  thread.updated = Date.now();
+
+  // Evict oldest threads if store is too large
+  if (threadStore.size > MAX_THREADS) {
+    let oldest: [string, ThreadRecord] | null = null;
+    for (const entry of threadStore) {
+      if (!oldest || entry[1].updated < oldest[1].updated) oldest = entry;
+    }
+    if (oldest) threadStore.delete(oldest[0]);
+  }
+
+  saveThreads();
+}
+
+// Webhook secret for inbound calls (optional security)
+const INBOUND_SECRET = process.env.INBOUND_SECRET ?? "";
 
 const MAX_STEPS       = 25;
 const MAX_OUTPUT_CHARS = 8000;
@@ -413,6 +480,25 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
           reason:  { type: "string", description: "One short sentence describing what this step does." },
         },
         required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reply_to_forum",
+      description:
+        "Post a reply (comment) to a forum topic on the WordPress site. " +
+        "Use this when responding to forum messages received via the /inbound channel. " +
+        "Requires the post_id of the topic to reply to.",
+      parameters: {
+        type: "object",
+        properties: {
+          post_id: { type: "number", description: "The WordPress post ID of the forum topic to reply to." },
+          content: { type: "string", description: "The reply content (plain text or HTML)." },
+          reason:  { type: "string", description: "One short sentence describing what this step does." },
+        },
+        required: ["post_id", "content"],
       },
     },
   },
@@ -1018,13 +1104,26 @@ function writeFile(filePath: string, content: string, append: boolean): string {
   }
 }
 
+async function replyToForum(postId: number, content: string): Promise<string> {
+  if (!postId || !content) return "ERROR: post_id and content are required.";
+  try {
+    const result = await wpRest("POST", "/wp/v2/comments", { post: postId, content, author_name: "AI Assistant" });
+    if (typeof result === "object" && result.error) return `ERROR: ${result.error}`;
+    const data = typeof result === "string" ? JSON.parse(result) : result;
+    return `OK: Comment posted (id=${data.id ?? "?"}) on post ${postId}`;
+  } catch (e: any) {
+    return `ERROR: ${e.message}`;
+  }
+}
+
 async function dispatchTool(name: string, args: Record<string, any>): Promise<string> {
-  if (name === "run_command")    return runCommand(args.command ?? "");
-  if (name === "write_file")     return writeFile(args.path ?? "", args.content ?? "", args.append === true);
-  if (name === "wp_rest")        return wpRest(args.method ?? "GET", args.endpoint ?? "/", args.body, args.params);
-  if (name === "wp_cli_remote")  return wpCliRemote(args.command ?? "");
-  if (name === "schedule_task")  return scheduleTaskFn(args.task ?? "", args.run_at, args.cron, args.label);
-  if (name === "fetch_page")     return fetchPage(args.url ?? "");
+  if (name === "run_command")      return runCommand(args.command ?? "");
+  if (name === "write_file")       return writeFile(args.path ?? "", args.content ?? "", args.append === true);
+  if (name === "wp_rest")          return wpRest(args.method ?? "GET", args.endpoint ?? "/", args.body, args.params);
+  if (name === "wp_cli_remote")    return wpCliRemote(args.command ?? "");
+  if (name === "schedule_task")    return scheduleTaskFn(args.task ?? "", args.run_at, args.cron, args.label);
+  if (name === "reply_to_forum")   return replyToForum(args.post_id ?? 0, args.content ?? "");
+  if (name === "fetch_page")       return fetchPage(args.url ?? "");
   if (name.startsWith("skill_"))      return dispatchSkill(name, args);
   if (name.startsWith("mcp_"))        return dispatchMcpTool(name, args);
   if (name.startsWith("wp_ability__")) return dispatchWpAbility(name, args);
@@ -1047,6 +1146,7 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
   if (fnName === "wp_cli_remote") return reason ? `🔧 ${reason.slice(0, 120)}` : `🔧 wp ${(fnArgs.command ?? "").slice(0, 100)}`;
   if (fnName === "schedule_task") return reason ? `⏰ ${reason.slice(0, 120)}` : `⏰ Scheduling: ${(fnArgs.label ?? fnArgs.task ?? "").slice(0, 80)}`;
   if (fnName === "write_file")    return reason ? `📝 ${reason.slice(0, 120)}` : `📝 Writing: ${(fnArgs.path ?? "").slice(0, 100)}`;
+  if (fnName === "reply_to_forum") return reason ? `💬 ${reason.slice(0, 120)}` : `💬 Replying to forum post ${fnArgs.post_id ?? ""}`;
   if (fnName === "fetch_page")    return reason ? `🌍 ${reason.slice(0, 120)}` : `🌍 Fetching: ${(fnArgs.url ?? "").slice(0, 100)}`;
   if (fnName.startsWith("skill_"))      return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
   if (fnName.startsWith("wp_ability__")) return reason ? `🔮 ${reason.slice(0, 120)}` : `🔮 WP: ${fnName.slice("wp_ability__".length).replace(/_/g, " ")}`;
@@ -1359,6 +1459,123 @@ expressApp.post("/task", async (req: Request, res: Response) => {
   res.end();
 });
 
+// ─── Inbound webhook (generic — forum, github, slack, etc.) ──────────────────
+
+expressApp.post("/inbound", async (req: Request, res: Response) => {
+  // Optional secret validation
+  if (INBOUND_SECRET) {
+    const provided = req.headers["x-webhook-secret"] ?? req.body?.secret;
+    if (provided !== INBOUND_SECRET) {
+      res.status(401).json({ error: "Invalid webhook secret" });
+      return;
+    }
+  }
+
+  const {
+    channel   = "unknown",   // "forum", "github", "slack", etc.
+    event     = "message",   // "new_post", "new_comment", "push", etc.
+    thread_id = "",          // unique ID for conversation continuity
+    author    = {},          // { name, email, role }
+    content   = "",          // the message text
+    title     = "",          // post/PR title
+    images    = [],          // array of image URLs
+    metadata  = {},          // any extra data (post_id, category, link, etc.)
+    model: reqModel,         // optional model override
+    auto_respond = true,     // if true, run the agent to generate a response
+  } = req.body ?? {};
+
+  if (!content && !title) {
+    res.status(400).json({ error: "No content or title provided" });
+    return;
+  }
+
+  const threadKey = thread_id || `${channel}_${Date.now()}`;
+  console.log(`[inbound] ${channel}/${event} thread=${threadKey} author=${author?.name ?? "?"}`);
+
+  // Build the message the agent will see
+  const contextParts: string[] = [
+    `[Inbound message from ${channel}]`,
+    `Event: ${event}`,
+  ];
+  if (title)       contextParts.push(`Title: ${title}`);
+  if (author?.name) contextParts.push(`Author: ${author.name}${author.role ? ` (${author.role})` : ""}`);
+  if (metadata?.link)     contextParts.push(`Link: ${metadata.link}`);
+  if (metadata?.post_id)  contextParts.push(`Post ID: ${metadata.post_id}`);
+  if (metadata?.category) contextParts.push(`Category: ${metadata.category}`);
+  if (content)     contextParts.push(`\nContent:\n${content}`);
+  if (images?.length) contextParts.push(`\nAttached images: ${images.join(", ")}`);
+
+  const userMessage = contextParts.join("\n");
+
+  // Save to thread history
+  appendToThread(channel, threadKey, "user", userMessage);
+
+  // Forward to Telegram as CRM notification
+  const tgNotification = [
+    `📩 *Inbound: ${channel}* (${event})`,
+    title ? `📝 ${title}` : "",
+    author?.name ? `👤 ${author.name}` : "",
+    metadata?.link ? `🔗 ${metadata.link}` : "",
+    content ? `\n${content.slice(0, 500)}${content.length > 500 ? "…" : ""}` : "",
+  ].filter(Boolean).join("\n");
+  notifyTelegram(tgNotification).catch(() => {});
+
+  // If auto_respond is false, just acknowledge receipt
+  if (!auto_respond) {
+    res.json({
+      status: "received",
+      thread_id: threadKey,
+      message: "Event received and forwarded to Telegram.",
+    });
+    return;
+  }
+
+  // Run the agent with thread history for context
+  const thread = getThread(channel, threadKey);
+  const model = reqModel ?? DEFAULT_MODEL;
+
+  // Build history from thread (exclude the current message — it's in userMessage)
+  const history = thread.history.slice(0, -1).map(h => ({
+    role: h.role,
+    content: h.content,
+  }));
+
+  // Stream the agent response
+  res.setHeader("Content-Type", "application/json");
+
+  let resultText = "(no response)";
+  let elapsed = 0;
+  try {
+    for await (const event of runAgent(userMessage, model, history)) {
+      if (event.type === "result") {
+        resultText = event.text ?? "(no response)";
+        elapsed = event.elapsed ?? 0;
+      }
+    }
+  } catch (e) {
+    resultText = `Agent error: ${e}`;
+    console.error(`[inbound] Agent error: ${e}`);
+  }
+
+  // Save agent response to thread
+  appendToThread(channel, threadKey, "assistant", resultText);
+  console.log(`[inbound] Response for ${channel}/${threadKey} in ${elapsed}s`);
+
+  // Notify Telegram of the agent's response
+  if (resultText && resultText !== "(no response)") {
+    const tgResponse = `🤖 *Agent replied* (${channel}/${event}):\n${resultText.slice(0, 3500)}`;
+    notifyTelegram(tgResponse).catch(() => {});
+  }
+
+  res.json({
+    status: "ok",
+    thread_id: threadKey,
+    response: resultText,
+    elapsed,
+    model,
+  });
+});
+
 expressApp.get("/schedules", (_req, res) => {
   res.json({ jobs: scheduler.getJobs() });
 });
@@ -1396,7 +1613,7 @@ expressApp.post("/reload-skills", (_req, res) => {
 
 // ─── Skill CRUD ────────────────────────────────────────────────────────────────
 
-const BUILTIN_TOOL_NAMES      = new Set(["run_command", "write_file", "wp_rest", "wp_cli_remote", "schedule_task"]);
+const BUILTIN_TOOL_NAMES      = new Set(["run_command", "write_file", "wp_rest", "wp_cli_remote", "schedule_task", "reply_to_forum"]);
 const FORBIDDEN_SKILL_COMMANDS = [
   "wp db drop", "wp db reset", "wp site empty", "wp eval", "wp eval-file", "wp shell",
   "rm -rf /", "mkfs", "dd if=", "> /dev/sda", "chmod 777 /",
@@ -1613,6 +1830,8 @@ expressApp.post("/reload-wp-abilities", async (_req, res) => {
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  loadThreads();
+
   cachedCustomTools = loadCustomSkills();
   console.log(`[agent] Custom skills loaded: ${cachedCustomTools.length}`);
 
