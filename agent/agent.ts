@@ -1112,6 +1112,7 @@ async function replyToForum(postId: number, content: string): Promise<string> {
       content,
       author_name: "AI Assistant",
       author_email: "ai@assistant.local",
+      status: "approved",
     });
     // wpRest returns "HTTP <status>\n<body>"
     const firstNewline = result.indexOf("\n");
@@ -1526,6 +1527,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   if (metadata?.category) contextParts.push(`Category: ${metadata.category}`);
   if (content)     contextParts.push(`\nContent:\n${content}`);
   if (images?.length) contextParts.push(`\nAttached images: ${images.join(", ")}`);
+  contextParts.push(`\nInstructions: Use the reply_to_forum tool to post your response. In your final message, include the FULL text of what you replied so the admin can see it.`);
 
   const userMessage = contextParts.join("\n");
 
