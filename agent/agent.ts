@@ -1170,13 +1170,21 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
 
 // ─── Scheduler helpers ────────────────────────────────────────────────────────
 
-async function notifyTelegram(text: string): Promise<void> {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_ADMIN_USER_ID) {
-    console.warn("[notify] Telegram notify skipped: BOT_TOKEN or ADMIN_USER_ID not set");
+async function notifyTelegram(text: string, recipientIds?: string[]): Promise<void> {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.warn("[notify] Telegram notify skipped: BOT_TOKEN not set");
+    return;
+  }
+  // Use provided recipient IDs if non-empty, otherwise fall back to global admin list.
+  const ids = recipientIds && recipientIds.length > 0
+    ? recipientIds
+    : (TELEGRAM_ADMIN_USER_ID || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    console.warn("[notify] Telegram notify skipped: no recipient IDs");
     return;
   }
   const truncated = text.length > 4000 ? text.slice(0, 4000) + "\n…[truncated]" : text;
-  for (const uid of TELEGRAM_ADMIN_USER_ID.split(",").map(s => s.trim()).filter(Boolean)) {
+  for (const uid of ids) {
     try {
       // Try Markdown first, fall back to plain text if it fails (user content may break formatting).
       await httpRequest({
@@ -1505,6 +1513,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     metadata  = {},          // any extra data (post_id, category, link, etc.)
     model: reqModel,         // optional model override
     auto_respond = true,     // if true, run the agent to generate a response
+    notify_chat_ids = [],    // optional per-channel Telegram recipient IDs
   } = req.body ?? {};
 
   if (!content && !title) {
@@ -1555,7 +1564,8 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     tgLines.push("");
     tgLines.push(`📰 Content: ${content.slice(0, 500)}${content.length > 500 ? "…" : ""}`);
   }
-  notifyTelegram(tgLines.join("\n")).catch(() => {});
+  const chatIds = Array.isArray(notify_chat_ids) && notify_chat_ids.length > 0 ? notify_chat_ids : undefined;
+  notifyTelegram(tgLines.join("\n"), chatIds).catch(() => {});
 
   // If auto_respond is false, just acknowledge receipt
   if (!auto_respond) {
@@ -1608,7 +1618,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     if (metadata?.link) respLines.push(`🔗 Link: ${metadata.link}`);
     respLines.push("");
     respLines.push(resultText.slice(0, 3500));
-    notifyTelegram(respLines.join("\n")).catch(() => {});
+    notifyTelegram(respLines.join("\n"), chatIds).catch(() => {});
   }
 
   res.json({
