@@ -1107,10 +1107,24 @@ function writeFile(filePath: string, content: string, append: boolean): string {
 async function replyToForum(postId: number, content: string): Promise<string> {
   if (!postId || !content) return "ERROR: post_id and content are required.";
   try {
-    const result = await wpRest("POST", "/wp/v2/comments", { post: postId, content, author_name: "AI Assistant" });
-    if (typeof result === "object" && result.error) return `ERROR: ${result.error}`;
-    const data = typeof result === "string" ? JSON.parse(result) : result;
-    return `OK: Comment posted (id=${data.id ?? "?"}) on post ${postId}`;
+    const result = await wpRest("POST", "/wp/v2/comments", {
+      post: postId,
+      content,
+      author_name: "AI Assistant",
+      author_email: "ai@assistant.local",
+    });
+    // wpRest returns "HTTP <status>\n<body>"
+    const firstNewline = result.indexOf("\n");
+    const statusLine = firstNewline > -1 ? result.slice(0, firstNewline) : result;
+    const body = firstNewline > -1 ? result.slice(firstNewline + 1) : "";
+    const statusCode = parseInt(statusLine.replace("HTTP ", ""), 10);
+    if (statusCode >= 400) return `ERROR: ${result}`;
+    try {
+      const data = JSON.parse(body);
+      return `OK: Comment posted (id=${data.id ?? "?"}) on post ${postId}`;
+    } catch {
+      return `OK: Comment posted on post ${postId}`;
+    }
   } catch (e: any) {
     return `ERROR: ${e.message}`;
   }
@@ -1163,12 +1177,18 @@ async function notifyTelegram(text: string): Promise<void> {
   const truncated = text.length > 4000 ? text.slice(0, 4000) + "\n…[truncated]" : text;
   for (const uid of TELEGRAM_ADMIN_USER_ID.split(",").map(s => s.trim()).filter(Boolean)) {
     try {
+      // Try Markdown first, fall back to plain text if it fails (user content may break formatting).
       await httpRequest({
         method:  "post",
         url:     `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         data:    { chat_id: uid, text: truncated, parse_mode: "Markdown" },
         timeout: 15_000,
-      });
+      }).catch(() => httpRequest({
+        method:  "post",
+        url:     `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        data:    { chat_id: uid, text: truncated },
+        timeout: 15_000,
+      }));
     } catch (e) {
       console.warn(`[notify] Telegram notify failed for user ${uid}: ${e}`);
     }
