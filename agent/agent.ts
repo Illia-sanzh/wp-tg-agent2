@@ -1464,7 +1464,9 @@ expressApp.post("/task", async (req: Request, res: Response) => {
 expressApp.post("/inbound", async (req: Request, res: Response) => {
   // Optional secret validation
   if (INBOUND_SECRET) {
-    const provided = req.headers["x-webhook-secret"] ?? req.body?.secret;
+    const authHeader = (req.headers["authorization"] ?? "").toString();
+    const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    const provided = bearer || req.headers["x-webhook-secret"] || req.body?.secret;
     if (provided !== INBOUND_SECRET) {
       res.status(401).json({ error: "Invalid webhook secret" });
       return;
