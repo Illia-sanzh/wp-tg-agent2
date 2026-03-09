@@ -118,6 +118,7 @@ services:
     mem_limit: 1152m
     networks:
       agent-internal: {}   # No internet route
+      host-access: {}      # Allows port publishing to host (internal:true blocks it)
     depends_on:
       greenclaw-litellm:
         condition: service_healthy
@@ -208,6 +209,14 @@ networks:
     ipam:
       config:
         - subnet: "172.28.0.0/16"
+
+  # Host-only bridge for exposing agent port to the host (WordPress plugin webhook).
+  # NOT internal, so port publishing works. No other containers need this.
+  host-access:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "172.30.0.0/16"
 
   # Only Squid lives here alongside agent-internal.
   # Normal bridge = HAS internet routing.
