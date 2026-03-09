@@ -306,7 +306,9 @@ interface TaskProfile {
 }
 
 // Must be defined before TASK_PROFILES (which references it)
-const ROUTER_MODEL = process.env.ROUTER_MODEL ?? "claude-haiku";
+// Auto-detect: if DEFAULT_MODEL uses openrouter/, router should too
+const ROUTER_MODEL = process.env.ROUTER_MODEL
+  ?? (DEFAULT_MODEL.startsWith("openrouter/") ? "openrouter/claude-haiku" : "claude-haiku");
 
 const TASK_PROFILES: Record<string, TaskProfile> = {
   forum_reply: {
