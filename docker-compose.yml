@@ -84,8 +84,8 @@ services:
       dockerfile: Dockerfile
     container_name: greenclaw-agent
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:3010:8080"   # WordPress plugin webhook → agent /inbound
+    # NOTE: Docker port publishing doesn't work with internal:true networks on this host.
+    # WordPress reaches the agent via socat (see install.sh / systemd unit).
     env_file: .env
     environment:
       # Points to LiteLLM, NOT directly to Anthropic → fixes the 401 issue
@@ -118,7 +118,6 @@ services:
     mem_limit: 1152m
     networks:
       agent-internal: {}   # No internet route
-      host-access: {}      # Allows port publishing to host (internal:true blocks it)
     depends_on:
       greenclaw-litellm:
         condition: service_healthy
@@ -209,14 +208,6 @@ networks:
     ipam:
       config:
         - subnet: "172.28.0.0/16"
-
-  # Host-only bridge for exposing agent port to the host (WordPress plugin webhook).
-  # NOT internal, so port publishing works. No other containers need this.
-  host-access:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: "172.30.0.0/16"
 
   # Only Squid lives here alongside agent-internal.
   # Normal bridge = HAS internet routing.
