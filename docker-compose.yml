@@ -84,6 +84,8 @@ services:
       dockerfile: Dockerfile
     container_name: greenclaw-agent
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:3010:8080"   # WordPress plugin webhook → agent /inbound
     env_file: .env
     environment:
       # Points to LiteLLM, NOT directly to Anthropic → fixes the 401 issue
