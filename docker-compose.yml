@@ -168,6 +168,25 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── Agent Relay ───────────────────────────────────────────────────────────
+  # Bridges the internal Docker network to the host. WordPress on the host
+  # calls localhost:3010, which this container forwards to greenclaw-agent:8080.
+  # Needed because internal:true networks block host→container traffic.
+  greenclaw-relay:
+    image: alpine/socat:latest
+    container_name: greenclaw-relay
+    restart: unless-stopped
+    command: TCP-LISTEN:3010,fork,reuseaddr TCP:greenclaw-agent:8080
+    ports:
+      - "127.0.0.1:3010:3010"
+    mem_limit: 32m
+    networks:
+      agent-internal: {}     # Can reach the agent
+      proxy-external: {}     # Non-internal — allows port publishing to host
+    depends_on:
+      greenclaw-agent:
+        condition: service_healthy
+
   # ── Telegram Bot ──────────────────────────────────────────────────────────
   # User interface. Relays Telegram messages to the agent.
   # Telegram API (api.telegram.org) is on the Squid allowlist.
