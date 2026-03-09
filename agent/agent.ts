@@ -305,6 +305,9 @@ interface TaskProfile {
   singleShot?: boolean;      // if true, skip the agentic loop — one LLM call, no tools
 }
 
+// Must be defined before TASK_PROFILES (which references it)
+const ROUTER_MODEL = process.env.ROUTER_MODEL ?? "claude-haiku";
+
 const TASK_PROFILES: Record<string, TaskProfile> = {
   forum_reply: {
     name: "forum_reply",
@@ -373,8 +376,6 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
 const DEFAULT_PROFILE = TASK_PROFILES.general;
 
 // ─── Router — cheap LLM call to classify task and pick a profile ─────────────
-
-const ROUTER_MODEL = process.env.ROUTER_MODEL ?? "claude-haiku";
 
 async function routeTask(message: string): Promise<TaskProfile> {
   const profileNames = Object.keys(TASK_PROFILES).filter(k => k !== "general");
