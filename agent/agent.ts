@@ -41,6 +41,7 @@ const WP_APP_PASSWORD   = process.env.WP_APP_PASSWORD   ?? "";
 const WP_ADMIN_PASSWORD = process.env.WP_ADMIN_PASSWORD ?? "";
 const BRIDGE_SECRET     = process.env.BRIDGE_SECRET     ?? "";
 const SKILL_FILE        = process.env.SKILL_FILE        ?? "/app/SKILL.md";
+const GITHUB_DEFAULT_REPO = process.env.GITHUB_DEFAULT_REPO ?? "";
 
 // MCP Adapter is always on the same host as WordPress — use host.docker.internal
 // (in NO_PROXY, avoids Squid) rather than WP_URL which may be a public hostname.
@@ -117,6 +118,24 @@ function appendToThread(channel: string, threadId: string, role: "user" | "assis
   }
 
   saveThreads();
+}
+
+// ─── Pending bug reports (for admin-triggered fixes) ─────────────────────────
+interface PendingBug {
+  title: string;
+  content: string;
+  author: any;
+  metadata: any;
+  timestamp: number;
+}
+const pendingBugs = new Map<string, PendingBug>();
+const BUG_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function cleanExpiredBugs(): void {
+  const now = Date.now();
+  for (const [key, bug] of pendingBugs) {
+    if (now - bug.timestamp > BUG_TTL_MS) pendingBugs.delete(key);
+  }
 }
 
 // Webhook secret for inbound calls (optional security)
@@ -363,6 +382,16 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
     maxTokens: 16384,
     maxOutputChars: 8000,
   },
+  bug_fix: {
+    name: "bug_fix",
+    tools: ["mcp_server_github__", "reply_to_forum", "read_file", "wp_rest"],
+    promptSections: ["identity", "execution_rules", "efficiency_rules", "bug_fix_workflow"],
+    knowledgePatterns: [],
+    skillFileSections: [],
+    maxSteps: 30,
+    maxTokens: 16384,
+    maxOutputChars: 12000,
+  },
   general: {
     name: "general",
     tools: ["*"],
@@ -438,6 +467,7 @@ async function routeTask(message: string): Promise<TaskProfile> {
 Categories:
 - forum_reply: replying to a forum post or comment, answering a question from a forum user
 - inbound_notify: event that only needs to be forwarded (votes, priority changes, type changes) — no AI response needed
+- bug_fix: investigating a bug report, searching code in GitHub, creating a fix, submitting a pull request
 - wp_admin: WordPress admin tasks (plugin management, user management, settings, content CRUD, database queries, site maintenance)
 - scheduling: scheduling tasks for the future, cron jobs, reminders
 - web_design: creating or modifying web pages, HTML/CSS, designing layouts, replicating designs
@@ -618,6 +648,34 @@ greenclaw-config/skills/. Use any loaded skill the same way as built-in tools.`,
 WordPress Abilities are plugin-registered tools exposed via the MCP Adapter (WP 7.0+).
 They appear as tools with the \`wp_ability__\` prefix. Use them for operations like
 toggling maintenance mode or bulk-updating site identity.`,
+
+  bug_fix_workflow: `## Bug Fix Workflow
+
+You have received a bug report from the forum. Your job is to analyze it, find the problematic code in GitHub, fix it, and submit a pull request.
+
+### Target Repository
+${GITHUB_DEFAULT_REPO ? `Repository: \`${GITHUB_DEFAULT_REPO}\`\nOwner: \`${GITHUB_DEFAULT_REPO.split("/")[0]}\`\nRepo: \`${GITHUB_DEFAULT_REPO.split("/")[1] ?? GITHUB_DEFAULT_REPO}\`\nUse these exact values for the \`owner\` and \`repo\` parameters in all GitHub MCP tool calls.` : "No default repository configured — check the bug report for repo context."}
+
+### Steps
+1. **Analyze the bug**: Read the bug report carefully. Identify the likely component, file, or function involved. Think about what could cause the described behavior.
+2. **Search the codebase**: Use GitHub MCP tools (\`search_code\`, \`get_file_contents\`) to find the relevant code in the repository. Start broad (search for keywords from the bug), then narrow down.
+3. **Understand the code**: Read the file(s) involved to understand the current behavior and what needs to change.
+4. **Create a fix branch**: Create a new branch named \`fix/<short-description>\` from the default branch (usually \`main\`).
+5. **Implement the fix**: Use \`create_or_update_file\` to modify the file(s) with the fix. Write clean, minimal changes — only fix the bug, don't refactor.
+6. **Update changelog**: If the repository has a CHANGELOG.md, add an entry for this fix in the same commit or a follow-up commit.
+7. **Create a pull request**: Open a PR with a clear title and description. Reference the bug report link. Explain what was broken and how it was fixed.
+8. **Reply on the forum**: Use \`reply_to_forum\` to post a comment on the original bug report with:
+   - A summary of what was found
+   - A link to the pull request
+   - Note that the fix is pending review/merge
+9. **Summarize**: End with a concise summary for the Telegram admin notification. Include the PR URL.
+
+### Safety Rules
+- NEVER push directly to main/master. Always use a feature branch and PR.
+- Make minimal, focused changes. Do not refactor unrelated code.
+- If you cannot identify the bug or a fix, explain what you found and what you tried. Do NOT make random changes.
+- If the repository is not accessible, explain the situation clearly.
+- Include the bug report link in the PR description so reviewers have context.`,
 };
 
 function buildSystemPrompt(sections: string[], profile?: TaskProfile): string {
@@ -1622,12 +1680,14 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
   if (fnName === "fetch_page")    return reason ? `🌍 ${reason.slice(0, 120)}` : `🌍 Fetching: ${(fnArgs.url ?? "").slice(0, 100)}`;
   if (fnName.startsWith("skill_"))      return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
   if (fnName.startsWith("wp_ability__")) return reason ? `🔮 ${reason.slice(0, 120)}` : `🔮 WP: ${fnName.slice("wp_ability__".length).replace(/_/g, " ")}`;
+  if (fnName.startsWith("mcp_server_github__")) return reason ? `🐙 ${reason.slice(0, 120)}` : `🐙 GitHub: ${fnName.slice("mcp_server_github__".length).replace(/_/g, " ")}`;
+  if (fnName.startsWith("mcp_")) return reason ? `🔗 ${reason.slice(0, 120)}` : `🔗 MCP: ${fnName.slice(4).replace(/_/g, " ")}`;
   return `⚙️ ${reason || fnName}`;
 }
 
 // ─── Scheduler helpers ────────────────────────────────────────────────────────
 
-async function notifyTelegram(text: string, recipientIds?: string[]): Promise<void> {
+async function notifyTelegram(text: string, recipientIds?: string[], replyMarkup?: any): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN) {
     console.warn("[notify] Telegram notify skipped: BOT_TOKEN not set");
     return;
@@ -1643,16 +1703,18 @@ async function notifyTelegram(text: string, recipientIds?: string[]): Promise<vo
   const truncated = text.length > 4000 ? text.slice(0, 4000) + "\n…[truncated]" : text;
   for (const uid of ids) {
     try {
+      const baseData: any = { chat_id: uid, text: truncated };
+      if (replyMarkup) baseData.reply_markup = replyMarkup;
       // Try Markdown first, fall back to plain text if it fails (user content may break formatting).
       await httpRequest({
         method:  "post",
         url:     `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-        data:    { chat_id: uid, text: truncated, parse_mode: "Markdown" },
+        data:    { ...baseData, parse_mode: "Markdown" },
         timeout: 15_000,
       }).catch(() => httpRequest({
         method:  "post",
         url:     `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-        data:    { chat_id: uid, text: truncated },
+        data:    baseData,
         timeout: 15_000,
       }));
     } catch (e) {
@@ -1927,6 +1989,11 @@ expressApp.get("/health", (_req, res) => {
     mcp_tools:       cachedMcpTools.length,
     wp_ability_tools: cachedWpAbilityTools.length,
     whisper:         whisperClient ? "available" : "unavailable (set OPENAI_API_KEY)",
+    bug_fix: {
+      repo: GITHUB_DEFAULT_REPO || "(not configured)",
+      github_mcp: cachedMcpTools.some(t => t.function.name.startsWith("mcp_server_github__")),
+      pending_bugs: pendingBugs.size,
+    },
   });
 });
 
@@ -1994,6 +2061,79 @@ expressApp.post("/task", async (req: Request, res: Response) => {
   res.end();
 });
 
+// ─── Bug fix trigger (called by Telegram bot when admin clicks "Fix this") ───
+
+expressApp.post("/bugfix/:postId", async (req: Request, res: Response) => {
+  const postId = req.params.postId;
+  const bug = pendingBugs.get(postId);
+
+  if (!bug) {
+    res.status(404).json({ error: `Bug #${postId} not found or expired (bugs expire after 24h)` });
+    return;
+  }
+
+  // Check prerequisites
+  const hasGithubMcp = cachedMcpTools.some(t => t.function.name.startsWith("mcp_server_github__"));
+  if (!hasGithubMcp) {
+    res.status(503).json({ error: "GitHub MCP not installed. Use /mcp install server-github first." });
+    return;
+  }
+  if (!GITHUB_DEFAULT_REPO) {
+    res.status(503).json({ error: "GITHUB_DEFAULT_REPO not set in .env" });
+    return;
+  }
+
+  const profile = TASK_PROFILES.bug_fix;
+  const model = DEFAULT_MODEL;
+
+  // Build context message with full bug details
+  const contextParts: string[] = [
+    `[BUG FIX REQUEST]`,
+    `This is a bug report from the forum that needs automated investigation and fixing.`,
+    "",
+    `Title: ${bug.title}`,
+    `Author: ${bug.author?.name ?? "Unknown"}`,
+    `Forum post ID: ${postId}`,
+  ];
+  if (bug.metadata?.link) contextParts.push(`Forum link: ${bug.metadata.link}`);
+  contextParts.push(`Target GitHub repository: ${GITHUB_DEFAULT_REPO}`);
+  contextParts.push("");
+  contextParts.push(`Bug description:`);
+  contextParts.push(bug.content || "(no description provided)");
+  contextParts.push("");
+  contextParts.push(`Follow the Bug Fix Workflow steps in your system prompt. Use GitHub MCP tools to search, fix, and create a PR. Then reply on the forum (post_id: ${postId}) with the PR link.`);
+
+  const userMessage = contextParts.join("\n");
+  console.log(`[bugfix] Starting fix for bug #${postId}: ${bug.title}`);
+
+  res.setHeader("Content-Type", "application/x-ndjson");
+  res.setHeader("Transfer-Encoding", "chunked");
+
+  try {
+    for await (const event of runAgent(userMessage, model, [], profile)) {
+      res.write(JSON.stringify(event) + "\n");
+      if (event.type === "result") {
+        console.log(`[bugfix] Bug #${postId} done in ${event.elapsed}s`);
+        // Notify Telegram with the result
+        const respLines = [
+          `🐛 Bug Fix Complete`,
+          "",
+          `📝 Bug: ${bug.title}`,
+        ];
+        if (bug.metadata?.link) respLines.push(`🔗 Forum: ${bug.metadata.link}`);
+        respLines.push("");
+        respLines.push((event.text ?? "").slice(0, 3500));
+        const chatIds = (TELEGRAM_ADMIN_USER_ID || "").split(",").map(s => s.trim()).filter(Boolean);
+        notifyTelegram(respLines.join("\n"), chatIds.length > 0 ? chatIds : undefined).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error(`[bugfix] Error for bug #${postId}:`, e);
+    res.write(JSON.stringify({ type: "result", text: `❌ Bug fix error: ${e}`, elapsed: 0, model }) + "\n");
+  }
+  res.end();
+});
+
 // ─── Inbound webhook (generic — forum, github, slack, etc.) ──────────────────
 
 expressApp.post("/inbound", async (req: Request, res: Response) => {
@@ -2054,7 +2194,24 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     tgLines.push(`📰 Content: ${content.slice(0, 500)}${content.length > 500 ? "…" : ""}`);
   }
   const chatIds = Array.isArray(notify_chat_ids) && notify_chat_ids.length > 0 ? notify_chat_ids : undefined;
-  notifyTelegram(tgLines.join("\n"), chatIds).catch(() => {});
+
+  // For bug_type events: store the bug report and add a "Fix this" button
+  let bugFixButton: any = undefined;
+  if (event === "bug_type" && metadata?.post_id) {
+    const postId = String(metadata.post_id);
+    pendingBugs.set(postId, { title, content, author, metadata, timestamp: Date.now() });
+    cleanExpiredBugs();
+    console.log(`[inbound] Stored pending bug #${postId} (${pendingBugs.size} total)`);
+
+    // Check if GitHub MCP is available for the button
+    const hasGithubMcp = cachedMcpTools.some(t => t.function.name.startsWith("mcp_server_github__"));
+    if (hasGithubMcp && GITHUB_DEFAULT_REPO) {
+      bugFixButton = {
+        inline_keyboard: [[{ text: "🔧 Fix this bug", callback_data: `bugfix:${postId}` }]],
+      };
+    }
+  }
+  notifyTelegram(tgLines.join("\n"), chatIds, bugFixButton).catch(() => {});
 
   // ── Notify-only profile: no LLM call at all ────────────────────────────
   if (profile.name === "inbound_notify") {

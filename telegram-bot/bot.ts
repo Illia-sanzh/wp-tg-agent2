@@ -1810,6 +1810,123 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
     }
   }
 }
+// ─── Bug fix callback handler ──────────────────────────────────────────────
+bot.on("callback_query:data", async ctx => {
+  const data = ctx.callbackQuery.data;
+
+  if (!data.startsWith("bugfix:")) {
+    await ctx.answerCallbackQuery({ text: "Unknown action" });
+    return;
+  }
+
+  if (!isAdmin(ctx)) {
+    await ctx.answerCallbackQuery({ text: "Unauthorized" });
+    return;
+  }
+
+  const postId = data.slice(7);
+  await ctx.answerCallbackQuery({ text: "Starting bug fix…" });
+
+  // Update the original notification to show it's being fixed
+  try {
+    const origText = ctx.callbackQuery.message?.text ?? "";
+    await ctx.editMessageText(origText + "\n\n🔧 _Fix in progress…_", { parse_mode: "Markdown" });
+  } catch {}
+  // Remove the inline button
+  try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }); } catch {}
+
+  const statusMsg = await ctx.reply(`🐛 Fixing bug #${postId}…`);
+  const chatId = ctx.chat!.id;
+  stopFlags.delete(chatId);
+
+  let result = "(no result)";
+  let elapsed = 0;
+  let modelUsed = DEFAULT_MODEL;
+  const steps: string[] = [];
+
+  function buildStatus(): string {
+    const lines = [`🐛 Fixing bug #${postId}…`];
+    if (steps.length) { lines.push(""); steps.forEach((s, i) => lines.push(`${i + 1}. ${s}`)); }
+    return lines.join("\n");
+  }
+
+  try {
+    const response = await agentAxios.post(
+      `${AGENT_URL}/bugfix/${postId}`,
+      {},
+      { responseType: "stream", timeout: 600_000 }, // 10 min — bug fixes can be long
+    );
+
+    let buffer = "";
+    let stopped = false;
+    await new Promise<void>((resolve) => {
+      response.data.on("data", (chunk: Buffer) => {
+        if (stopFlags.get(chatId)) {
+          stopped = true;
+          response.data.destroy();
+          return;
+        }
+        buffer += chunk.toString("utf8");
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+            if (event.type === "progress") {
+              steps.push(event.text ?? "⚙️ Working…");
+              ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, buildStatus()).catch(() => {});
+            } else if (event.type === "thinking") {
+              ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, buildStatus()).catch(() => {});
+            } else if (event.type === "result") {
+              result    = event.text ?? "(no result)";
+              elapsed   = event.elapsed ?? 0;
+              modelUsed = event.model ?? DEFAULT_MODEL;
+            }
+          } catch {}
+        }
+      });
+      response.data.on("end",   resolve);
+      response.data.on("error", resolve);
+      response.data.on("close", resolve);
+    });
+
+    if (stopped || stopFlags.get(chatId)) {
+      stopFlags.delete(chatId);
+      try { await ctx.api.editMessageText(statusMsg.chat.id, statusMsg.message_id, "🛑 Bug fix stopped."); } catch {}
+      return;
+    }
+  } catch (e: any) {
+    if (e.response?.status === 404) {
+      result = `❌ Bug #${postId} not found or expired. Bugs expire after 24 hours.`;
+    } else if (e.response?.status === 503) {
+      const errorMsg = e.response?.data?.error ?? "Service unavailable";
+      result = `❌ ${errorMsg}`;
+    } else if (e.code === "ECONNABORTED" || e.message?.includes("timeout")) {
+      result = "⏱️ Bug fix timed out after 10 minutes.";
+    } else {
+      result = `❌ Error: ${sanitize(e.message ?? String(e))}`;
+    }
+  }
+
+  // Delete status message and send result
+  try { await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id); } catch {}
+
+  const MAX_LEN = 4000;
+  const footer  = `\n\n_⏱ ${elapsed}s • ${modelUsed} • bug fix_`;
+  const chunks  = [];
+  for (let i = 0; i < Math.max(result.length, 1); i += MAX_LEN) chunks.push(result.slice(i, i + MAX_LEN));
+
+  for (let i = 0; i < chunks.length; i++) {
+    const text = chunks[i] + (i === chunks.length - 1 ? footer : "");
+    try {
+      await ctx.reply(text, { parse_mode: "Markdown" });
+    } catch {
+      try { await ctx.reply(text); } catch (e2) { console.error(`Failed to send bug fix result: ${e2}`); }
+    }
+  }
+});
+
 bot.on("message:text", async ctx => {
   if (!isAdmin(ctx)) { await ctx.reply("⛔ Unauthorized."); return; }
 
