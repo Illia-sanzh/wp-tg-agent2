@@ -2167,6 +2167,17 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     return;
   }
 
+  // ── Self-reply guard: skip comments/posts authored by the AI itself ────────
+  // Without this, the agent's own forum replies trigger new webhooks, creating
+  // an infinite loop: reply → webhook → reply → webhook → …
+  const authorEmail = (author?.email ?? "").toLowerCase();
+  const authorName  = (author?.name  ?? "").toLowerCase();
+  if (authorEmail === "ai@assistant.local" || authorName === "ai assistant") {
+    console.log(`[inbound] Skipping self-authored event (author: ${author?.name}, email: ${author?.email})`);
+    res.json({ status: "skipped", reason: "self-authored" });
+    return;
+  }
+
   // Deterministic routing — no LLM call needed for inbound events
   const profile = routeInboundEvent(event, auto_respond);
   const threadKey = thread_id || `${channel}_${Date.now()}`;
