@@ -33,10 +33,10 @@ You (Telegram) ──text/voice──▶ Bot ──▶ AI Agent ──▶ WP-CLI
 
 | Container | Role | RAM |
 |---|---|---|
-| `openclaw-bot` | Telegram bot — receives messages, sends replies | 256 MB |
-| `openclaw-agent` | AI agent — LLM loop, tools, scheduler | 1152 MB |
-| `openclaw-litellm` | LLM proxy — holds API keys, enforces budget | 896 MB |
-| `openclaw-squid` | Egress filter — allowlist-only outbound | ~64 MB |
+| `greenclaw-bot` | Telegram bot — receives messages, sends replies | 256 MB |
+| `greenclaw-agent` | AI agent — LLM loop, tools, scheduler | 1152 MB |
+| `greenclaw-litellm` | LLM proxy — holds API keys, enforces budget | 896 MB |
+| `greenclaw-squid` | Egress filter — allowlist-only outbound | ~64 MB |
 
 **Security design:** All containers are on an `internal` Docker network with no direct internet access. Only Squid has an internet route and only allows pre-approved domains.
 
@@ -93,7 +93,7 @@ it as a normal text command.
 
 **Setup:**
 1. Add `OPENAI_API_KEY` to your `.env` file (the same key used for GPT-4o, if any).
-2. Restart the agent: `docker compose restart openclaw-agent`
+2. Restart the agent: `docker compose restart greenclaw-agent`
 
 **Check it's working:**
 ```
@@ -153,7 +153,7 @@ SMART_MODEL=claude-sonnet-4-6    # complex analysis, debugging, multi-step tasks
 # Or go bigger: SMART_MODEL=claude-opus-4-6 or SMART_MODEL=openrouter/deepseek-r1
 ```
 
-Then restart the bot: `docker compose restart openclaw-bot`
+Then restart the bot: `docker compose restart greenclaw-bot`
 
 **How it classifies:**
 
@@ -205,7 +205,7 @@ Qwen, DeepSeek-R1, and hundreds more. Get a key at [openrouter.ai/keys](https://
 
 **Setup:**
 1. Add `OPENROUTER_API_KEY=<your-key>` to `.env`
-2. Restart LiteLLM: `docker compose restart openclaw-litellm`
+2. Restart LiteLLM: `docker compose restart greenclaw-litellm`
 
 **Pre-configured OpenRouter models:**
 
@@ -233,14 +233,14 @@ Skills are YAML files that add new tools to the AI agent — without touching an
 
 ### Adding a Skill
 
-1. Create a `.yaml` file in `openclaw-config/skills/` on your server.
+1. Create a `.yaml` file in `greenclaw-config/skills/` on your server.
 2. Send `/skill reload` in Telegram (no restart needed).
 3. Ask the agent to use it naturally: _"Check the disk space"_
 
 **Example — check server disk space** (included by default):
 
 ```yaml
-# openclaw-config/skills/disk-space.yaml
+# greenclaw-config/skills/disk-space.yaml
 name: check_server_disk
 label: "Check Server Disk Space"
 description: >
@@ -254,7 +254,7 @@ parameters: []
 **Example — call an external API:**
 
 ```yaml
-# openclaw-config/skills/exchange-rate.yaml
+# greenclaw-config/skills/exchange-rate.yaml
 name: get_exchange_rate
 label: "Currency Exchange Rate"
 description: >
@@ -273,13 +273,13 @@ parameters:
 > For HTTP skills that call external domains, add the domain to `squid/allowlist.txt`:
 > ```bash
 > echo ".open.er-api.com" >> squid/allowlist.txt
-> docker exec openclaw-squid squid -k reconfigure
+> docker exec greenclaw-squid squid -k reconfigure
 > ```
 
 **Example — send a webhook:**
 
 ```yaml
-# openclaw-config/skills/notify-slack.yaml
+# greenclaw-config/skills/notify-slack.yaml
 name: notify_slack
 label: "Send Slack Notification"
 description: >
@@ -310,7 +310,7 @@ parameters:
 /skill reload         → pick up new or changed YAML files without restarting
 ```
 
-See `openclaw-config/skills/README.md` for the full YAML format reference.
+See `greenclaw-config/skills/README.md` for the full YAML format reference.
 
 ### MCP Servers (Advanced)
 
@@ -325,12 +325,12 @@ endpoints via an `http` skill. Native MCP transport support is planned for a fut
 ```bash
 # Status
 docker compose ps
-docker compose logs -f openclaw-agent
-docker compose logs -f openclaw-bot
+docker compose logs -f greenclaw-agent
+docker compose logs -f greenclaw-bot
 
 # Restart a single container
-docker compose restart openclaw-agent
-docker compose restart openclaw-litellm
+docker compose restart greenclaw-agent
+docker compose restart greenclaw-litellm
 
 # Restart everything
 docker compose restart
@@ -343,7 +343,7 @@ docker compose pull && docker compose up -d
 
 # Add a domain to Squid allowlist (e.g. for a new skill's external API)
 echo ".newdomain.com" >> squid/allowlist.txt
-docker exec openclaw-squid squid -k reconfigure
+docker exec greenclaw-squid squid -k reconfigure
 
 # View scheduled tasks (JSON)
 curl http://localhost:8080/schedules   # from inside the server
@@ -356,13 +356,13 @@ curl -X POST http://localhost:8080/reload-skills
 
 ## WordPress Bridge Plugin
 
-The bridge plugin (`wordpress-bridge-plugin/openclaw-wp-bridge.php`) lets the
+The bridge plugin (`wordpress-bridge-plugin/greenclaw-wp-bridge.php`) lets the
 agent run WP-CLI commands on remote WordPress sites via the REST API.
 
 **Manual install:**
 1. Upload the plugin folder to `wp-content/plugins/`
 2. Activate in WP Admin → Plugins
-3. Go to Settings → OpenClaw Bridge
+3. Go to Settings → GreenClaw Bridge
 4. Paste the `BRIDGE_SECRET` from your `.env`
 
 ---
@@ -407,7 +407,7 @@ Key variables in `.env`:
 
 **Bot doesn't respond:**
 ```bash
-docker compose logs openclaw-bot
+docker compose logs greenclaw-bot
 # Check that TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_USER_ID are set correctly in .env
 ```
 
@@ -415,28 +415,28 @@ docker compose logs openclaw-bot
 ```bash
 # OPENAI_API_KEY must be set in .env
 grep OPENAI_API_KEY .env
-docker compose restart openclaw-agent
+docker compose restart greenclaw-agent
 ```
 
 **Scheduled tasks don't fire:**
 ```bash
-docker compose logs openclaw-agent | grep scheduler
+docker compose logs greenclaw-agent | grep scheduler
 # Check the agent-data volume exists
 docker volume ls | grep agent-data
 ```
 
 **AI returns errors:**
 ```bash
-docker compose logs openclaw-litellm
+docker compose logs greenclaw-litellm
 # Check your API key and budget at the provider's dashboard
 ```
 
 **Custom skill not showing up:**
 ```bash
 # Check YAML syntax
-cat openclaw-config/skills/my-skill.yaml
+cat greenclaw-config/skills/my-skill.yaml
 # Look for load errors in agent logs
-docker compose logs openclaw-agent | grep -i skill
+docker compose logs greenclaw-agent | grep -i skill
 # Reload without restarting
 curl -X POST http://localhost:8080/reload-skills
 ```
@@ -444,21 +444,21 @@ curl -X POST http://localhost:8080/reload-skills
 **WP-CLI commands fail:**
 ```bash
 # Check that WordPress path is correct
-docker exec openclaw-agent wp --path=/wordpress --allow-root core version
+docker exec greenclaw-agent wp --path=/wordpress --allow-root core version
 
 # If WordPress is remote, check bridge plugin
-curl https://yoursite.com/wp-json/openclaw/v1/health
+curl https://yoursite.com/wp-json/greenclaw/v1/health
 ```
 
 **HTTP skill can't reach its API:**
 ```bash
 # The domain must be in the Squid allowlist
 echo ".api.example.com" >> squid/allowlist.txt
-docker exec openclaw-squid squid -k reconfigure
+docker exec greenclaw-squid squid -k reconfigure
 ```
 
 **Out of budget:**
 ```bash
 # Edit .env and increase MONTHLY_BUDGET_USD, then:
-docker compose restart openclaw-litellm
+docker compose restart greenclaw-litellm
 ```

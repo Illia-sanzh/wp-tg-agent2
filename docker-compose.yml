@@ -16,11 +16,11 @@ services:
   # THE ONLY CONTAINER WITH INTERNET ACCESS.
   # Lives in agent-internal (to serve other containers) AND proxy-external
   # (to reach the internet). Allowlist enforced by squid.conf.
-  openclaw-squid:
+  greenclaw-squid:
     build:
       context: ./squid
       dockerfile: Dockerfile
-    container_name: openclaw-squid
+    container_name: greenclaw-squid
     restart: unless-stopped
     volumes:
       - ./squid/squid.conf:/etc/squid/squid.conf:ro
@@ -42,9 +42,9 @@ services:
   # Sits between agent and AI providers. Holds real API keys. Budget limits.
   # internal:true means it has NO internet route — must use Squid for all
   # outbound AI API calls.
-  openclaw-litellm:
+  greenclaw-litellm:
     image: ghcr.io/berriai/litellm:main-stable
-    container_name: openclaw-litellm
+    container_name: greenclaw-litellm
     restart: unless-stopped
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
@@ -52,9 +52,9 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
     environment:
       # Force all AI API calls through Squid (the only internet gateway)
-      HTTPS_PROXY: "http://openclaw-squid:3128"
-      HTTP_PROXY: "http://openclaw-squid:3128"
-      NO_PROXY: "openclaw-squid,openclaw-agent,openclaw-bot,localhost,127.0.0.1,172.28.0.0/16"
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-squid,greenclaw-agent,greenclaw-bot,localhost,127.0.0.1,172.28.0.0/16"
       # CRITICAL: aiohttp ignores proxy env vars by default — this enables them
       AIOHTTP_TRUST_ENV: "true"
       UVICORN_WORKERS: "1"
@@ -62,7 +62,7 @@ services:
     networks:
       agent-internal: {}   # No internet route (internal:true on this network)
     depends_on:
-      openclaw-squid:
+      greenclaw-squid:
         condition: service_healthy
     healthcheck:
       # Python socket check — works regardless of which HTTP endpoints exist and
@@ -78,20 +78,20 @@ services:
   # internal:true means it physically cannot reach the internet directly.
   # All outbound traffic goes through Squid via HTTP_PROXY env var.
   # LLM calls go to LiteLLM (internal), which then proxies through Squid.
-  openclaw-agent:
+  greenclaw-agent:
     build:
       context: ./agent
       dockerfile: Dockerfile
-    container_name: openclaw-agent
+    container_name: greenclaw-agent
     restart: unless-stopped
     env_file: .env
     environment:
       # Points to LiteLLM, NOT directly to Anthropic → fixes the 401 issue
-      LITELLM_BASE_URL: "http://openclaw-litellm:4000/v1"
+      LITELLM_BASE_URL: "http://greenclaw-litellm:4000/v1"
       # For any tool that downloads from the internet (plugins, images)
-      HTTPS_PROXY: "http://openclaw-squid:3128"
-      HTTP_PROXY: "http://openclaw-squid:3128"
-      NO_PROXY: "openclaw-litellm,openclaw-squid,openclaw-bot,openclaw-mcp-runner,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-litellm,greenclaw-squid,greenclaw-bot,greenclaw-mcp-runner,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
       PYTHONUNBUFFERED: "1"
       SKILL_FILE: "/app/SKILL.md"
       WP_PATH: "/wordpress"
@@ -108,7 +108,7 @@ services:
       # WordPress files (if on same server). Remote-only mode: set WP_PATH="" in .env
       - ${WP_PATH:-/var/www/html}:/wordpress:rw
       - ./SKILL.md:/app/SKILL.md:ro
-      - ./openclaw-config:/app/config:rw
+      - ./greenclaw-config:/app/config:rw
       - agent-tmp:/tmp/wp-agent
       # Persistent data for APScheduler's SQLite job store.
       # Scheduled tasks survive container restarts because of this volume.
@@ -117,7 +117,7 @@ services:
     networks:
       agent-internal: {}   # No internet route
     depends_on:
-      openclaw-litellm:
+      greenclaw-litellm:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
@@ -130,17 +130,17 @@ services:
   # Sandboxed Node.js container that installs and runs MCP servers on-demand.
   # SECURITY: named volume only (no host bind mounts), cap_drop ALL, read-only
   # root FS, all outbound through Squid. Only whitelisted npm packages allowed.
-  openclaw-mcp-runner:
+  greenclaw-mcp-runner:
     build:
       context: ./mcp-runner
       dockerfile: Dockerfile
-    container_name: openclaw-mcp-runner
+    container_name: greenclaw-mcp-runner
     restart: unless-stopped
     environment:
       # All npm/MCP outbound traffic routed through Squid
-      HTTPS_PROXY: "http://openclaw-squid:3128"
-      HTTP_PROXY: "http://openclaw-squid:3128"
-      NO_PROXY: "openclaw-agent,openclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-agent,greenclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
       MCP_ENV_SECRET: "${MCP_ENV_SECRET:-}"
     volumes:
       # Named volume only — NO host bind mount (security boundary)
@@ -157,7 +157,7 @@ services:
     networks:
       agent-internal: {}
     depends_on:
-      openclaw-squid:
+      greenclaw-squid:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "node -e 'fetch(\"http://localhost:9000/health\").then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))'"]
@@ -169,24 +169,24 @@ services:
   # ── Telegram Bot ──────────────────────────────────────────────────────────
   # User interface. Relays Telegram messages to the agent.
   # Telegram API (api.telegram.org) is on the Squid allowlist.
-  openclaw-bot:
+  greenclaw-bot:
     build:
       context: ./telegram-bot
       dockerfile: Dockerfile
-    container_name: openclaw-bot
+    container_name: greenclaw-bot
     restart: unless-stopped
     env_file: .env
     environment:
-      AGENT_URL: "http://openclaw-agent:8080"
+      AGENT_URL: "http://greenclaw-agent:8080"
       # Telegram long-polling goes through Squid
-      HTTPS_PROXY: "http://openclaw-squid:3128"
-      HTTP_PROXY: "http://openclaw-squid:3128"
-      NO_PROXY: "openclaw-agent,openclaw-litellm,openclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-agent,greenclaw-litellm,greenclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
     mem_limit: 256m
     networks:
       agent-internal: {}   # No internet route
     depends_on:
-      openclaw-agent:
+      greenclaw-agent:
         condition: service_healthy
 
 volumes:

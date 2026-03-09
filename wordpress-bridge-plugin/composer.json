@@ -1,6 +1,6 @@
 {
-    "name": "openclaw/wp-bridge-plugin",
-    "description": "WordPress bridge plugin for the OpenClaw Telegram agent",
+    "name": "greenclaw/wp-bridge-plugin",
+    "description": "WordPress bridge plugin for the GreenClaw Telegram agent",
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "require": {

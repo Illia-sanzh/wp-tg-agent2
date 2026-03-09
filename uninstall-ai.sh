@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # uninstall-ai.sh — Remove the AI agent stack only
 #
-# Removes:  Docker containers, images, volumes, networks (openclaw-*)
+# Removes:  Docker containers, images, volumes, networks (greenclaw-*)
 #           Bridge plugin from WordPress (if local)
 #           .env and install.log
 #
@@ -49,11 +49,11 @@ echo -e "${RESET}"
 [[ $EUID -ne 0 ]] && die "Please run as root: sudo bash uninstall-ai.sh"
 
 echo "  This will permanently remove:"
-echo "    • All openclaw Docker containers"
-echo "    • All openclaw Docker images"
+echo "    • All greenclaw Docker containers"
+echo "    • All greenclaw Docker images"
 echo "    • Docker volumes (squid-logs, agent-tmp)"
 echo "    • Docker networks (agent-internal, proxy-external)"
-echo "    • The OpenClaw bridge plugin from WordPress"
+echo "    • The GreenClaw bridge plugin from WordPress"
 echo "    • .env and install.log"
 echo
 echo "  This will NOT touch:"
@@ -97,17 +97,17 @@ fi
 
 # ── Remove bridge plugin ───────────────────────────────────────────────────────
 PLUGIN_DIR=""
-if [[ -n "$WP_PATH" ]] && [[ -d "$WP_PATH/wp-content/plugins/openclaw-wp-bridge" ]]; then
-    PLUGIN_DIR="$WP_PATH/wp-content/plugins/openclaw-wp-bridge"
-elif [[ -d "/var/www/html/wp-content/plugins/openclaw-wp-bridge" ]]; then
-    PLUGIN_DIR="/var/www/html/wp-content/plugins/openclaw-wp-bridge"
+if [[ -n "$WP_PATH" ]] && [[ -d "$WP_PATH/wp-content/plugins/greenclaw-wp-bridge" ]]; then
+    PLUGIN_DIR="$WP_PATH/wp-content/plugins/greenclaw-wp-bridge"
+elif [[ -d "/var/www/html/wp-content/plugins/greenclaw-wp-bridge" ]]; then
+    PLUGIN_DIR="/var/www/html/wp-content/plugins/greenclaw-wp-bridge"
 fi
 
 if [[ -n "$PLUGIN_DIR" ]]; then
     WP_INSTALL_PATH=$(dirname "$(dirname "$PLUGIN_DIR")")
     if command -v wp &>/dev/null; then
         task "Deactivating bridge plugin" \
-            wp plugin deactivate openclaw-wp-bridge \
+            wp plugin deactivate greenclaw-wp-bridge \
                 --path="$WP_INSTALL_PATH" --allow-root || true
     fi
     task "Removing bridge plugin files" \

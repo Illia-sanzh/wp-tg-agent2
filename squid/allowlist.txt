@@ -1,7 +1,7 @@
 # Squid egress allowlist
 # Only these domains (and their subdomains) can be reached from containers.
 # Format: .domain.com  (leading dot = subdomains included)
-# Add new domains with: echo ".newdomain.com" >> allowlist.txt && docker exec openclaw-squid squid -k reconfigure
+# Add new domains with: echo ".newdomain.com" >> allowlist.txt && docker exec greenclaw-squid squid -k reconfigure
 #
 # NOTE (Squid 6): do NOT list a subdomain if its parent is already listed.
 # e.g. .api.example.com is redundant when .example.com is present.

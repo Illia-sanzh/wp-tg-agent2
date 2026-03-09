@@ -2,7 +2,7 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:docs.openclaw.ai)",
+      "WebFetch(domain:docs.greenclaw.ai)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
@@ -19,7 +19,7 @@
       "WebFetch(domain:make.wordpress.org)",
       "Bash(ls -la /home/illia/wp-tg-agent2/.env*)",
       "Bash(ls /home/illia/wp-tg-agent2/*.env*)",
-      "Bash(docker exec openclaw-agent wp core version --path=/wordpress --allow-root)"
+      "Bash(docker exec greenclaw-agent wp core version --path=/wordpress --allow-root)"
     ]
   }
 }

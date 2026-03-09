@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-mcp-runner",
+  "name": "greenclaw-mcp-runner",
   "version": "1.0.0",
   "description": "HTTP wrapper that installs and runs stdio MCP servers on demand",
   "main": "mcp-runner.js",

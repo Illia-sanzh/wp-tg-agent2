@@ -23,7 +23,7 @@ const ADMIN_USER_IDS = new Set<number>(
     .filter(n => !isNaN(n)),
 );
 
-const AGENT_URL     = process.env.AGENT_URL     ?? "http://openclaw-agent:8080";
+const AGENT_URL     = process.env.AGENT_URL     ?? "http://greenclaw-agent:8080";
 const DEFAULT_MODEL = process.env.DEFAULT_MODEL ?? "claude-sonnet-4-6";
 const AUTO_ROUTING  = (process.env.AUTO_ROUTING ?? "false").toLowerCase() === "true";
 const FAST_MODEL    = process.env.FAST_MODEL    ?? "claude-haiku-4-5";
@@ -1038,7 +1038,7 @@ function isSkillFile(path: string): boolean {
 async function listGithubSkillFiles(
   owner: string, repo: string, branch: string, pathPrefix: string
 ): Promise<{ files: string[]; warn: string; branch: string }> {
-  const headers = { Accept: "application/vnd.github.v3+json", "User-Agent": "openclaw-bot/1.0" };
+  const headers = { Accept: "application/vnd.github.v3+json", "User-Agent": "greenclaw-bot/1.0" };
 
   // Resolve default branch if not known
   if (!branch) {

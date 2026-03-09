@@ -625,7 +625,7 @@ _update_gitignore() {
 task "Updating .gitignore" _update_gitignore
 
 task "Creating directories" \
-    mkdir -p squid litellm agent telegram-bot openclaw-config wordpress-bridge-plugin
+    mkdir -p squid litellm agent telegram-bot greenclaw-config wordpress-bridge-plugin
 
 # When WordPress is local, MariaDB defaults to listening on localhost only.
 # The agent runs in a Docker container and reaches the host via host.docker.internal.
@@ -718,7 +718,7 @@ task "Starting all containers" \
 
 # ── Wait for healthy with a single updating line ───────────────────────────────
 echo
-SERVICES=("openclaw-squid" "openclaw-litellm" "openclaw-agent" "openclaw-bot")
+SERVICES=("greenclaw-squid" "greenclaw-litellm" "greenclaw-agent" "greenclaw-bot")
 TOTAL_SVC=${#SERVICES[@]}
 MAX_WAIT=120
 INTERVAL=5
@@ -754,19 +754,19 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 nextstep "Bridge plugin and finalizing"
 
-PLUGIN_FILE="$SCRIPT_DIR/wordpress-bridge-plugin/openclaw-wp-bridge.php"
+PLUGIN_FILE="$SCRIPT_DIR/wordpress-bridge-plugin/greenclaw-wp-bridge.php"
 
 if [[ "$WP_REMOTE" == "true" ]]; then
     warn "WordPress is on a remote server. Install the bridge plugin manually:"
-    echo "    1. Copy wordpress-bridge-plugin/openclaw-wp-bridge.php to the remote server"
-    echo "       into: wp-content/plugins/openclaw-wp-bridge/"
+    echo "    1. Copy wordpress-bridge-plugin/greenclaw-wp-bridge.php to the remote server"
+    echo "       into: wp-content/plugins/greenclaw-wp-bridge/"
     echo "    2. Activate in WP Admin → Plugins"
-    echo "    3. Settings → OpenClaw Bridge → paste secret below"
+    echo "    3. Settings → GreenClaw Bridge → paste secret below"
 
 elif [[ -n "$WP_PATH" ]] && [[ -f "$PLUGIN_FILE" ]]; then
 
     _copy_plugin() {
-        local dest="$WP_PATH/wp-content/plugins/openclaw-wp-bridge"
+        local dest="$WP_PATH/wp-content/plugins/greenclaw-wp-bridge"
         mkdir -p "$dest"
         cp "$PLUGIN_FILE" "$dest/"
         local owner
@@ -776,14 +776,14 @@ elif [[ -n "$WP_PATH" ]] && [[ -f "$PLUGIN_FILE" ]]; then
     task "Copying bridge plugin" _copy_plugin
 
     _activate_plugin() {
-        wp plugin activate openclaw-wp-bridge \
+        wp plugin activate greenclaw-wp-bridge \
             --path="$WP_PATH" --allow-root
         # Pre-populate the secret so the user doesn't need to visit the Settings UI
-        wp option update openclaw_bridge_secret "$BRIDGE_SECRET" \
+        wp option update greenclaw_bridge_secret "$BRIDGE_SECRET" \
             --path="$WP_PATH" --allow-root || true
     }
     task "Activating bridge plugin" _activate_plugin \
-        || warn "Auto-activate failed — activate 'OpenClaw Bridge' manually in WP Admin → Plugins."
+        || warn "Auto-activate failed — activate 'GreenClaw Bridge' manually in WP Admin → Plugins."
 
     _create_app_password() {
         command -v wp &>/dev/null || return 1
@@ -793,7 +793,7 @@ elif [[ -n "$WP_PATH" ]] && [[ -f "$PLUGIN_FILE" ]]; then
         [[ "$major" -ge 5 ]] || return 1
         local raw
         raw=$(wp user application-password create \
-            "$WP_ADMIN_USER" "OpenClaw Agent" \
+            "$WP_ADMIN_USER" "GreenClaw Agent" \
             --path="$WP_PATH" --allow-root --porcelain 2>/dev/null || echo "")
         [[ -n "$raw" ]] || return 1
         WP_APP_PASSWORD="$raw"

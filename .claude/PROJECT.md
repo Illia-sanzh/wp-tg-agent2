@@ -5,7 +5,7 @@ WordPress management bot: user texts Telegram → AI agent → WP-CLI/REST → W
 
 ## Branch Architecture
 - `main` — custom Telegram bot (`telegram-bot/` using python-telegram-bot)
-- `feature/openclaw-gateway` — OpenClaw Gateway (multi-channel, web dashboard port 18789)
+- `feature/greenclaw-gateway` — GreenClaw Gateway (multi-channel, web dashboard port 18789)
 
 ## Critical: The 401 Fix
 Agent uses **OpenAI-compatible SDK** (`from openai import OpenAI`) pointing to LiteLLM.
@@ -16,16 +16,16 @@ Model name: `claude-sonnet-4-6` → LiteLLM maps to `anthropic/claude-sonnet-4-6
 | File | Role |
 |------|------|
 | `install.sh` | Single-command installer, asks 8 questions, generates tokens |
-| `docker-compose.yml` | 4 containers: openclaw-agent, openclaw-litellm, openclaw-squid, openclaw-gateway |
+| `docker-compose.yml` | 4 containers: greenclaw-agent, greenclaw-litellm, greenclaw-squid, greenclaw-gateway |
 | `agent/agent.py` | Flask API: `/ask`, `/task` (LLM loop), `/run` (WP-CLI executor), `/upload` |
 | `litellm/config.yaml` | Model routing, budget limits, fallback chain |
 | `squid/allowlist.txt` | Allowlist-only egress proxy |
-| `wordpress-bridge-plugin/openclaw-wp-bridge.php` | PHP plugin: runs WP-CLI via REST, auth via `X-OpenClaw-Secret` |
+| `wordpress-bridge-plugin/greenclaw-wp-bridge.php` | PHP plugin: runs WP-CLI via REST, auth via `X-GreenClaw-Secret` |
 | `SKILL.md` | WP-CLI patterns loaded into Flask agent LLM context |
-| `openclaw-workspace/openclaw.json` | OpenClaw gateway config (Telegram, LiteLLM, skills) |
-| `openclaw-workspace/skills/wordpress-manager/SKILL.md` | Level 3 skill — OpenClaw LLM = agent brain |
+| `greenclaw-workspace/greenclaw.json` | GreenClaw gateway config (Telegram, LiteLLM, skills) |
+| `greenclaw-workspace/skills/wordpress-manager/SKILL.md` | Level 3 skill — GreenClaw LLM = agent brain |
 
-## /run Endpoint (feature/openclaw-gateway)
+## /run Endpoint (feature/greenclaw-gateway)
 ```json
 {"command": "wp plugin list --format=json"}
 {"command": "wp post update 42 {content_file}", "content": "<!-- wp:paragraph -->..."}
@@ -34,25 +34,25 @@ Model name: `claude-sonnet-4-6` → LiteLLM maps to `anthropic/claude-sonnet-4-6
 - `content` field writes HTML to `/tmp/wp-content.html`, replaces `{content_file}` in command
 - No LLM — pure executor
 
-## OpenClaw Frontmatter
+## GreenClaw Frontmatter
 Use `user-invokable: true` (NOT `user-invocable` — wrong spelling, will be rejected).
 
 ## Security
 - Squid: allowlist-only outbound
 - LiteLLM: monthly budget cap via `MONTHLY_BUDGET_USD`
-- Bridge plugin: `X-OpenClaw-Secret` header auth
+- Bridge plugin: `X-GreenClaw-Secret` header auth
 - Telegram: single user via `TELEGRAM_ADMIN_USER_ID`
 - Blocked WP-CLI: `db drop`, `db reset`, `site empty`, `eval`, `shell`
 
 ## Memory Limits (4GB VPS)
-- openclaw-agent: 1536MB
-- openclaw-litellm: 512MB
-- openclaw-gateway: 512MB
-- openclaw-squid: ~64MB
+- greenclaw-agent: 1536MB
+- greenclaw-litellm: 512MB
+- greenclaw-gateway: 512MB
+- greenclaw-squid: ~64MB
 
-## OPENCLAW_GATEWAY_TOKEN
+## GREENCLAW_GATEWAY_TOKEN
 Required for web dashboard login. Auto-generated in `install.sh` via `openssl rand -hex 32`.
-Written to `.env`, passed to `openclaw-gateway` container, displayed in install summary.
+Written to `.env`, passed to `greenclaw-gateway` container, displayed in install summary.
 
 ## AI Providers
 Anthropic, OpenAI, DeepSeek, Gemini — all routed through LiteLLM with fallback chain.

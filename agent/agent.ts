@@ -25,7 +25,7 @@ import { getProxyForUrl } from "proxy-from-env";
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const LITELLM_BASE_URL   = process.env.LITELLM_BASE_URL   ?? "http://openclaw-litellm:4000/v1";
+const LITELLM_BASE_URL   = process.env.LITELLM_BASE_URL   ?? "http://greenclaw-litellm:4000/v1";
 const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY ?? "sk-1234";
 const DEFAULT_MODEL      = process.env.DEFAULT_MODEL      ?? "claude-sonnet-4-6";
 const FALLBACK_MODEL     = process.env.FALLBACK_MODEL     ?? "gpt-4o";
@@ -289,26 +289,209 @@ try {
   scheduler = new PersistentScheduler(":memory:");
 }
 
-// ─── System prompt ────────────────────────────────────────────────────────────
+// ─── Task Profiles ────────────────────────────────────────────────────────────
+// Each profile defines: which tools, which system prompt sections, step/token limits.
 
-function loadSystemPrompt(): string {
-  let skill = "";
-  if (fs.existsSync(SKILL_FILE)) skill = fs.readFileSync(SKILL_FILE, "utf8");
+interface TaskProfile {
+  name: string;
+  tools: string[];           // tool name prefixes/names to include ("*" = all)
+  promptSections: string[];  // which prompt sections to include
+  knowledgePatterns: string[]; // keywords to match against .md skill filenames (empty = none, ["*"] = all)
+  skillFileSections: string[]; // which SKILL.md sections to include (empty = none, ["*"] = all)
+  maxSteps: number;
+  maxTokens: number;
+  maxOutputChars: number;    // tool result truncation limit (default 8000)
+  model?: string;            // per-profile model override (null = use request/default model)
+  singleShot?: boolean;      // if true, skip the agentic loop — one LLM call, no tools
+}
 
-  const wpDirExists = fs.existsSync(WP_PATH) && fs.readdirSync(WP_PATH).length > 0;
-  const wpMode = wpDirExists ? "local" : "remote";
+const TASK_PROFILES: Record<string, TaskProfile> = {
+  forum_reply: {
+    name: "forum_reply",
+    tools: ["reply_to_forum"],
+    promptSections: ["identity", "wp_config"],
+    knowledgePatterns: [],
+    skillFileSections: [],
+    maxSteps: 2,
+    maxTokens: 1024,
+    maxOutputChars: 2000,
+    model: ROUTER_MODEL,     // use cheap model for forum replies
+    singleShot: true,
+  },
+  inbound_notify: {
+    name: "inbound_notify",
+    tools: [],
+    promptSections: ["identity"],
+    knowledgePatterns: [],
+    skillFileSections: [],
+    maxSteps: 0,
+    maxTokens: 0,
+    maxOutputChars: 0,
+  },
+  wp_admin: {
+    name: "wp_admin",
+    tools: ["run_command", "wp_rest", "wp_cli_remote", "write_file", "reply_to_forum", "wp_ability__"],
+    promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "abilities"],
+    knowledgePatterns: [],
+    skillFileSections: ["capabilities", "wpcli", "safety", "guardrails", "content_formatting", "common_skills"],
+    maxSteps: 15,
+    maxTokens: 4096,
+    maxOutputChars: 8000,
+  },
+  scheduling: {
+    name: "scheduling",
+    tools: ["schedule_task", "run_command", "wp_rest"],
+    promptSections: ["identity", "wp_config", "execution_rules", "scheduling"],
+    knowledgePatterns: [],
+    skillFileSections: [],
+    maxSteps: 5,
+    maxTokens: 2048,
+    maxOutputChars: 4000,
+  },
+  web_design: {
+    name: "web_design",
+    tools: ["run_command", "wp_rest", "write_file", "fetch_page", "skill_", "wp_cli_remote"],
+    promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "web_design", "custom_skills"],
+    knowledgePatterns: ["*"],  // all .md knowledge skills (web-design, greenshift-blocks, etc.)
+    skillFileSections: ["capabilities", "wpcli", "safety", "content_formatting", "web_design_workflow"],
+    maxSteps: 25,
+    maxTokens: 16384,
+    maxOutputChars: 8000,
+  },
+  general: {
+    name: "general",
+    tools: ["*"],
+    promptSections: ["*"],
+    knowledgePatterns: ["*"],
+    skillFileSections: ["*"],
+    maxSteps: 25,
+    maxTokens: 16384,
+    maxOutputChars: 8000,
+  },
+};
 
-  return `You are a WordPress management AI agent.
+const DEFAULT_PROFILE = TASK_PROFILES.general;
 
-${skill}
+// ─── Router — cheap LLM call to classify task and pick a profile ─────────────
 
-## Current Configuration
-- WordPress mode: ${wpMode}
+const ROUTER_MODEL = process.env.ROUTER_MODEL ?? "claude-haiku";
+
+async function routeTask(message: string): Promise<TaskProfile> {
+  const profileNames = Object.keys(TASK_PROFILES).filter(k => k !== "general");
+  const routerPrompt = `You are a task router. Given a user message, classify it into exactly one category.
+Categories:
+- forum_reply: replying to a forum post or comment, answering a question from a forum user
+- inbound_notify: event that only needs to be forwarded (votes, priority changes, type changes) — no AI response needed
+- wp_admin: WordPress admin tasks (plugin management, user management, settings, content CRUD, database queries, site maintenance)
+- scheduling: scheduling tasks for the future, cron jobs, reminders
+- web_design: creating or modifying web pages, HTML/CSS, designing layouts, replicating designs
+- general: anything that doesn't fit above, or complex multi-domain tasks
+
+Respond with ONLY the category name, nothing else.`;
+
+  try {
+    const resp = await client.chat.completions.create({
+      model: ROUTER_MODEL,
+      messages: [
+        { role: "system", content: routerPrompt },
+        { role: "user", content: message.slice(0, 500) },
+      ],
+      max_tokens: 20,
+      temperature: 0,
+    });
+    const category = (resp.choices?.[0]?.message?.content ?? "").trim().toLowerCase().replace(/[^a-z_]/g, "");
+    if (TASK_PROFILES[category]) {
+      console.log(`[router] Classified as: ${category}`);
+      return TASK_PROFILES[category];
+    }
+    console.log(`[router] Unknown category "${category}", using general`);
+    return DEFAULT_PROFILE;
+  } catch (e) {
+    console.warn(`[router] Router call failed (${e}), using general profile`);
+    return DEFAULT_PROFILE;
+  }
+}
+
+// For inbound events, we can route deterministically without an LLM call
+function routeInboundEvent(event: string, autoRespond: boolean): TaskProfile {
+  if (!autoRespond) return TASK_PROFILES.inbound_notify;
+  if (event === "new_topic" || event === "new_comment") return TASK_PROFILES.forum_reply;
+  // votes, priority changes, type changes — just notify
+  return TASK_PROFILES.inbound_notify;
+}
+
+// ─── Modular system prompt (section-based) ───────────────────────────────────
+
+// ─── SKILL.md section splitting ──────────────────────────────────────────────
+// Split SKILL.md by ## headings into named sections for selective loading.
+
+let _skillFileRaw = "";
+if (fs.existsSync(SKILL_FILE)) _skillFileRaw = fs.readFileSync(SKILL_FILE, "utf8");
+
+const SKILL_FILE_SECTIONS: Record<string, string> = {};
+{
+  // Map heading text → section key
+  const sectionKeyMap: Record<string, string> = {
+    "capabilities":              "capabilities",
+    "how to use wp-cli":         "wpcli",
+    "how to use the abilities api": "abilities_api",
+    "how to use the mcp adapter":"mcp_adapter",
+    "safety rules":              "safety",
+    "guard rails":               "guardrails",
+    "creating vs updating content": "content_creating",
+    "content formatting rules":  "content_formatting",
+    "ai content generation":     "ai_content",
+    "web design & page creation workflow": "web_design_workflow",
+    "common skills":             "common_skills",
+  };
+
+  const lines = _skillFileRaw.split("\n");
+  let currentKey = "_preamble";
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^##\s+(.+)/);
+    if (headingMatch) {
+      // Save previous section
+      if (currentLines.length > 0) {
+        SKILL_FILE_SECTIONS[currentKey] = currentLines.join("\n").trim();
+      }
+      const headingLower = headingMatch[1].trim().toLowerCase().replace(/\(.*?\)/g, "").trim();
+      currentKey = sectionKeyMap[headingLower] ?? headingLower.replace(/[^a-z0-9]+/g, "_");
+      currentLines = [line];
+    } else {
+      currentLines.push(line);
+    }
+  }
+  if (currentLines.length > 0) {
+    SKILL_FILE_SECTIONS[currentKey] = currentLines.join("\n").trim();
+  }
+  console.log(`[skill-file] Split into ${Object.keys(SKILL_FILE_SECTIONS).length} sections: ${Object.keys(SKILL_FILE_SECTIONS).join(", ")}`);
+}
+
+function getSkillFileSections(patterns: string[]): string {
+  if (patterns.length === 0) return "";
+  if (patterns.includes("*")) return _skillFileRaw;
+  const parts: string[] = [];
+  for (const pattern of patterns) {
+    if (SKILL_FILE_SECTIONS[pattern]) parts.push(SKILL_FILE_SECTIONS[pattern]);
+  }
+  return parts.join("\n\n");
+}
+
+const _wpDirExists = fs.existsSync(WP_PATH) && (() => { try { return fs.readdirSync(WP_PATH).length > 0; } catch { return false; } })();
+const _wpMode = _wpDirExists ? "local" : "remote";
+
+const PROMPT_SECTIONS: Record<string, string> = {
+  identity: "You are a WordPress management AI agent. Be concise and efficient.",
+
+  wp_config: `## Current Configuration
+- WordPress mode: ${_wpMode}
 - WordPress path (local): ${WP_PATH}
 - WordPress URL: ${WP_URL}
-- WP admin user: ${WP_ADMIN_USER}
+- WP admin user: ${WP_ADMIN_USER}`,
 
-## Execution Rules
+  execution_rules: `## Execution Rules
 1. Think step-by-step before taking any action.
 2. Use the \`run_command\` tool to run WP-CLI or bash commands.
 3. Use the \`wp_rest\` tool to call the WordPress REST API.
@@ -316,70 +499,157 @@ ${skill}
 5. After each command, check the output before proceeding.
 6. When done, give a concise human-readable summary of what was accomplished.
 7. If something fails, explain why and what the user should do.
-8. Always set the \`reason\` field on every tool call with a short plain-English description of what you are doing.
+8. Always set the \`reason\` field on every tool call with a short plain-English description.
 9. NEVER run: wp db drop, wp db reset, wp site empty, wp eval, wp shell.
 10. ALWAYS use --allow-root when running wp commands.
-11. For destructive operations, always ask for confirmation first (respond without running).
+11. For destructive operations, always ask for confirmation first.
 12. If WP-CLI fails with a database error, switch to wp_rest immediately.
-13. NEVER run: nmap, nc, netstat, ss, mysqladmin, mysqld, service mysql, systemctl mysql, mysql -u, mysqld_safe, ps aux | grep mysql.
+13. NEVER run: nmap, nc, netstat, ss, mysqladmin, mysqld, service mysql, systemctl mysql, mysql -u, mysqld_safe.`,
 
-## Efficiency Rules (IMPORTANT)
+  efficiency_rules: `## Efficiency Rules (IMPORTANT)
 - You have a LIMITED step budget. Do NOT waste steps searching, listing, or exploring when you can act directly.
 - If a command fails, try ONE different approach. If that also fails, explain the problem and stop.
 - NEVER retry the exact same command hoping for a different result.
 - When creating content, ALWAYS create NEW posts/pages. Do NOT search for existing posts unless the user explicitly asked to update a specific one.
 - Prefer \`wp post create --porcelain\` to get an ID, then \`wp post update\` — this is 2 steps, not 5+ steps of searching.
-- CRITICAL: Use the \`write_file\` tool (NOT run_command with cat/heredoc) to create HTML files. Split large HTML into 2-3 write_file calls: first call writes the <style> + first sections, then use append=true for the rest. This prevents output truncation.
+- CRITICAL: Use the \`write_file\` tool (NOT run_command with cat/heredoc) to create HTML files.
 - When updating an existing post's design, do NOT read the old content first — just create the new HTML from scratch and overwrite it.
-- Do NOT fetch the same URL twice.
+- Do NOT fetch the same URL twice.`,
 
-## WordPress Mode: ${wpMode.toUpperCase()}
-${wpMode === "local"
+  wp_mode: `## WordPress Mode: ${_wpMode.toUpperCase()}
+${_wpMode === "local"
   ? `You have direct WP-CLI access. Use: wp --path=${WP_PATH} --allow-root`
-  : "WordPress is remote. Use wp_rest or wp_cli_remote tools."}
+  : "WordPress is remote. Use wp_rest or wp_cli_remote tools."}`,
 
-## Scheduling Tasks
+  scheduling: `## Scheduling Tasks
 Use the \`schedule_task\` tool when the user asks to do something at a specific time or on a recurring basis.
 - For one-time tasks: set \`run_at\` to an ISO 8601 UTC datetime (e.g. "2024-01-15T17:00:00")
 - For recurring tasks: set \`cron\` to a 5-part expression: minute hour day month weekday
   Examples: "0 17 * * *" = every day at 5 pm UTC | "0 3 * * 1" = every Monday at 3 am UTC
 - When the user gives a local time, ask for their UTC offset (e.g. +05:30) before scheduling.
-- Always tell the user the job ID returned so they can cancel it later with /tasks cancel <ID>.
+- Always tell the user the job ID returned so they can cancel it later with /tasks cancel <ID>.`,
 
-## Fetching Web Pages
+  web_design: `## Fetching Web Pages
 Use the \`fetch_page\` tool to download and inspect any public webpage's HTML/CSS.
 When asked to replicate a design:
-1. Fetch the page and study its LAYOUT PATTERNS: asymmetric grids, jigsaw arrangements, dark/light section alternation, card sizes
-2. Note the exact COLOR PALETTE: primary brand color, dark section bg, accent colors, text colors
-3. Note TYPOGRAPHY: weight (700? 800?), size hierarchy, letter-spacing
-4. Create HTML+CSS that matches the layout structure precisely — asymmetric grids, not boring equal columns
-5. Include ANIMATIONS: scroll-triggered fade-ins, hover effects, gradient animations
+1. Fetch the page and study its LAYOUT PATTERNS
+2. Note the exact COLOR PALETTE
+3. Note TYPOGRAPHY
+4. Create HTML+CSS that matches the layout structure precisely
+5. Include ANIMATIONS: scroll-triggered fade-ins, hover effects, gradient text/backgrounds
 6. Convert to WordPress blocks (use skill_convert if available, otherwise wp:html wrapper)
 7. Insert into WordPress
 
 ## Web Design Quality (CRITICAL)
 You are a world-class web designer. Your output must feel ALIVE, not like a flat template.
-- **Varied layouts**: use jigsaw grids (2/3+1/3, then 3 equal), bento grids, asymmetric splits. NEVER make every section the same boring equal-column grid.
-- **Dark/light contrast**: alternate between light and dark background sections for drama
-- **Animations**: ALWAYS include scroll-reveal animations (IntersectionObserver), card hover lift effects, and gradient text/backgrounds
-- **Dramatic hero**: full-bleed gradient/image background, large bold heading (possibly with gradient text), animated background
-- **Depth**: layered shadows, overlapping elements, backdrop-filter blur
-- The web-design and greenshift-blocks knowledge skills have full CSS patterns and code snippets
+- Varied layouts: use jigsaw grids, bento grids, asymmetric splits
+- Dark/light contrast: alternate between light and dark background sections
+- Animations: scroll-reveal animations, card hover lift effects, gradient text/backgrounds
+- Dramatic hero: full-bleed gradient/image background, large bold heading
+- Depth: layered shadows, overlapping elements, backdrop-filter blur
+- The web-design and greenshift-blocks knowledge skills have full CSS patterns and code snippets`,
 
-## Custom Skills
-Additional tool functions may be available below if YAML skill files are present in
-openclaw-config/skills/. Use any loaded skill the same way as built-in tools.
+  custom_skills: `## Custom Skills
+Additional tool functions may be available if YAML skill files are present in
+greenclaw-config/skills/. Use any loaded skill the same way as built-in tools.`,
 
-## WordPress Abilities
+  skill_file: _skillFileRaw,
+
+  abilities: `## WordPress Abilities
 WordPress Abilities are plugin-registered tools exposed via the MCP Adapter (WP 7.0+).
 They appear as tools with the \`wp_ability__\` prefix. Use them for operations like
-toggling maintenance mode or bulk-updating site identity — things not easily done
-via WP-CLI or the REST API. They communicate directly with WordPress through its
-MCP endpoint.
-`;
+toggling maintenance mode or bulk-updating site identity.`,
+};
+
+function buildSystemPrompt(sections: string[], profile?: TaskProfile): string {
+  if (sections.includes("*")) {
+    // Full prompt — all sections + all skill file + all markdown skills
+    const all = Object.values(PROMPT_SECTIONS).filter(Boolean).join("\n\n");
+    const skillFile = _skillFileRaw;
+    const mdSkills = getMarkdownSkills(["*"]);
+    const parts = [all];
+    if (skillFile) parts.push(skillFile);
+    if (mdSkills) parts.push("## Installed Knowledge Skills\n\n" + mdSkills);
+    return parts.join("\n\n");
+  }
+  const parts: string[] = [];
+  for (const s of sections) {
+    if (PROMPT_SECTIONS[s]) parts.push(PROMPT_SECTIONS[s]);
+  }
+  // Include relevant SKILL.md sections
+  if (profile) {
+    const skillContent = getSkillFileSections(profile.skillFileSections);
+    if (skillContent) parts.push(skillContent);
+  }
+  // Include relevant markdown knowledge skills
+  if (profile) {
+    const mdSkills = getMarkdownSkills(profile.knowledgePatterns);
+    if (mdSkills) parts.push("## Knowledge Skills\n\n" + mdSkills);
+  }
+  return parts.join("\n\n");
 }
 
-const SYSTEM_PROMPT = loadSystemPrompt();
+// Legacy wrapper for non-profiled calls (scheduled tasks, etc.)
+function fullSystemPrompt(): string {
+  return buildSystemPrompt(["*"]);
+}
+
+// ─── Tool filtering by profile ───────────────────────────────────────────────
+
+function getToolsForProfile(profile: TaskProfile): OpenAI.Chat.ChatCompletionTool[] {
+  if (profile.tools.includes("*")) {
+    return [...TOOLS, ...cachedCustomTools, ...cachedMcpTools, ...cachedWpAbilityTools];
+  }
+  const selected: OpenAI.Chat.ChatCompletionTool[] = [];
+  const allAvailable = [...TOOLS, ...cachedCustomTools, ...cachedMcpTools, ...cachedWpAbilityTools];
+  for (const tool of allAvailable) {
+    const name = tool.function.name;
+    for (const pattern of profile.tools) {
+      if (name === pattern || name.startsWith(pattern)) {
+        selected.push(tool);
+        break;
+      }
+    }
+  }
+  return selected;
+}
+
+// ─── Thread history summarization ────────────────────────────────────────────
+
+const SUMMARIZE_AFTER = 6; // Summarize when history exceeds this many messages
+
+async function summarizeHistory(history: Array<{ role: string; content: string }>): Promise<Array<{ role: string; content: string }>> {
+  if (history.length <= SUMMARIZE_AFTER) return history;
+
+  // Keep the last 4 messages verbatim, summarize everything before that
+  const toSummarize = history.slice(0, -4);
+  const toKeep = history.slice(-4);
+
+  try {
+    const summaryResp = await client.chat.completions.create({
+      model: ROUTER_MODEL,
+      messages: [
+        { role: "system", content: "Summarize this conversation history in 2-3 concise sentences. Focus on: what was discussed, what actions were taken, and any important context for continuing the conversation. Be factual and brief." },
+        { role: "user", content: toSummarize.map(m => `${m.role}: ${m.content}`).join("\n\n").slice(0, 3000) },
+      ],
+      max_tokens: 200,
+      temperature: 0,
+    });
+    const summary = summaryResp.choices?.[0]?.message?.content ?? "";
+    if (summary) {
+      console.log(`[threads] Summarized ${toSummarize.length} messages → ${summary.length} chars`);
+      return [
+        { role: "system", content: `Previous conversation summary: ${summary}` },
+        ...toKeep,
+      ];
+    }
+  } catch (e) {
+    console.warn(`[threads] Summary failed (${e}), using truncated history`);
+  }
+
+  // Fallback: just keep the last few messages
+  return toKeep;
+}
 
 // ─── Built-in tool definitions ────────────────────────────────────────────────
 
@@ -428,7 +698,7 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "wp_cli_remote",
       description:
-        "Run a WP-CLI command on a remote WordPress site via the OpenClaw bridge plugin. " +
+        "Run a WP-CLI command on a remote WordPress site via the GreenClaw bridge plugin. " +
         "Use when WordPress is hosted on a different server. " +
         "Provide the WP-CLI command WITHOUT the 'wp' prefix.",
       parameters: {
@@ -571,32 +841,54 @@ function loadCustomSkills(): OpenAI.Chat.ChatCompletionTool[] {
 
 let cachedCustomTools: OpenAI.Chat.ChatCompletionTool[] = [];
 
-// ─── Markdown knowledge skills ───────────────────────────────────────────────
+// ─── Markdown knowledge skills (on-demand loading) ──────────────────────────
 
-function loadMarkdownSkills(): string {
-  if (!fs.existsSync(SKILLS_DIR)) return "";
-  const parts: string[] = [];
+interface MarkdownSkill {
+  name: string;      // filename without .md
+  filename: string;  // full filename
+  content: string;   // file content
+}
+
+let cachedMarkdownSkillList: MarkdownSkill[] = [];
+
+function loadMarkdownSkillList(): MarkdownSkill[] {
+  if (!fs.existsSync(SKILLS_DIR)) return [];
+  const skills: MarkdownSkill[] = [];
   try {
     for (const file of fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith(".md") && !f.toLowerCase().startsWith("readme")).sort()) {
       try {
         const content = fs.readFileSync(path.join(SKILLS_DIR, file), "utf8").trim();
-        if (content) parts.push(`### Skill: ${file.replace(/\.md$/, "")}\n\n${content}`);
+        if (content) skills.push({ name: file.replace(/\.md$/, ""), filename: file, content });
       } catch (e) { console.warn(`[skills] Failed to load markdown ${file}: ${e}`); }
     }
   } catch {}
-  return parts.join("\n\n---\n\n");
+  return skills;
 }
 
-let cachedMarkdownSkills = "";
-
-function fullSystemPrompt(): string {
-  if (!cachedMarkdownSkills) return SYSTEM_PROMPT;
-  return SYSTEM_PROMPT + "\n\n## Installed Knowledge Skills\n\n" + cachedMarkdownSkills;
+/** Get markdown skills filtered by patterns (keywords matched against skill name). */
+function getMarkdownSkills(patterns: string[]): string {
+  if (patterns.length === 0) return "";
+  if (patterns.includes("*")) {
+    return cachedMarkdownSkillList.map(s => `### Skill: ${s.name}\n\n${s.content}`).join("\n\n---\n\n");
+  }
+  // Match by keyword: pattern "design" matches "web-design", pattern "greenshift" matches "greenshift-blocks"
+  const matched = cachedMarkdownSkillList.filter(skill => {
+    const nameLower = skill.name.toLowerCase();
+    return patterns.some(p => nameLower.includes(p.toLowerCase()));
+  });
+  if (matched.length === 0) return "";
+  return matched.map(s => `### Skill: ${s.name}\n\n${s.content}`).join("\n\n---\n\n");
 }
+
+// Legacy: get all markdown skills as a single string (for backward compat)
+function loadMarkdownSkills(): string {
+  return getMarkdownSkills(["*"]);
+}
+let cachedMarkdownSkills = "";  // kept for legacy code paths
 
 // ─── MCP tool loader ──────────────────────────────────────────────────────────
 
-const MCP_RUNNER_URL = "http://openclaw-mcp-runner:9000";
+const MCP_RUNNER_URL = "http://greenclaw-mcp-runner:9000";
 
 async function loadMcpTools(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
   try {
@@ -652,7 +944,7 @@ async function wpMcpSession(): Promise<Record<string, string>> {
     jsonrpc: "2.0", id: 1, method: "initialize",
     params: {
       protocolVersion: "2024-11-05", capabilities: {},
-      clientInfo: { name: "openclaw-agent", version: "1.0" },
+      clientInfo: { name: "greenclaw-agent", version: "1.0" },
     },
   });
 
@@ -731,6 +1023,58 @@ async function loadWpAbilities(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
 
 function getAllTools(): OpenAI.Chat.ChatCompletionTool[] {
   return [...TOOLS, ...cachedCustomTools, ...cachedMcpTools, ...cachedWpAbilityTools];
+}
+
+// ─── Single-shot mode (forum reply: one LLM call, no tool loop) ──────────────
+
+async function runSingleShot(
+  userMessage: string,
+  model: string,
+  profile: TaskProfile,
+  history: ChatMessage[] = [],
+): Promise<{ text: string; elapsed: number; model: string }> {
+  const start = Date.now();
+  const systemPrompt = buildSystemPrompt(profile.promptSections, profile);
+
+  // Summarize history if needed
+  const rawHistory = history.map(h => ({ role: h.role, content: h.content }));
+  const condensed = await summarizeHistory(rawHistory);
+
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+    ...condensed.map(h => ({ role: h.role as "user" | "assistant" | "system", content: h.content })),
+    { role: "user", content: userMessage },
+  ];
+
+  const fallback = model.startsWith("openrouter/") ? OR_FALLBACK_MODEL : FALLBACK_MODEL;
+
+  try {
+    const resp = await client.chat.completions.create({
+      model,
+      messages,
+      max_tokens: profile.maxTokens,
+      temperature: 0.7,
+    });
+    const text = resp.choices?.[0]?.message?.content ?? "(no response)";
+    return { text, elapsed: (Date.now() - start) / 1000, model };
+  } catch (e: any) {
+    if (model !== fallback) {
+      console.warn(`[single-shot] ${model} failed, trying ${fallback}`);
+      try {
+        const resp = await client.chat.completions.create({
+          model: fallback,
+          messages,
+          max_tokens: profile.maxTokens,
+          temperature: 0.7,
+        });
+        const text = resp.choices?.[0]?.message?.content ?? "(no response)";
+        return { text, elapsed: (Date.now() - start) / 1000, model: fallback };
+      } catch (e2: any) {
+        return { text: `AI service error: ${e2.message ?? e2}`, elapsed: (Date.now() - start) / 1000, model: fallback };
+      }
+    }
+    return { text: `AI service error: ${e.message ?? e}`, elapsed: (Date.now() - start) / 1000, model };
+  }
 }
 
 // ─── Tool implementations ─────────────────────────────────────────────────────
@@ -873,13 +1217,13 @@ async function wpRest(
 async function wpCliRemote(command: string): Promise<string> {
   if (!WP_URL || !BRIDGE_SECRET) return "ERROR: WP_URL or BRIDGE_SECRET not configured.";
 
-  const url = WP_URL.replace(/\/$/, "") + "/wp-json/openclaw/v1/cli";
+  const url = WP_URL.replace(/\/$/, "") + "/wp-json/greenclaw/v1/cli";
   try {
     const resp = await httpRequest({
       method:  "post",
       url,
       data:    { command },
-      headers: { "X-OpenClaw-Secret": BRIDGE_SECRET, "Content-Type": "application/json" },
+      headers: { "X-GreenClaw-Secret": BRIDGE_SECRET, "Content-Type": "application/json" },
       timeout: 60_000,
     });
     const d = resp.data;
@@ -1033,7 +1377,7 @@ async function uploadMediaToWp(
   const wpExists = fs.existsSync(WP_PATH) && fs.readdirSync(WP_PATH).length > 0;
   if (wpExists) {
     const safeName = filename.replace(/[^\w.\-]/g, "_");
-    const tmpPath  = `/tmp/openclaw-upload-${crypto.randomBytes(4).toString("hex")}-${safeName}`;
+    const tmpPath  = `/tmp/greenclaw-upload-${crypto.randomBytes(4).toString("hex")}-${safeName}`;
     try {
       fs.writeFileSync(tmpPath, fileBytes);
       const result = spawnSync(
@@ -1238,24 +1582,38 @@ async function* runAgent(
   userMessage: string,
   model: string = DEFAULT_MODEL,
   history: ChatMessage[] = [],
+  profile: TaskProfile = DEFAULT_PROFILE,
 ): AsyncGenerator<AgentEvent> {
+  // Summarize long history before building messages
+  const rawHistory = history.map(h => ({ role: h.role, content: h.content }));
+  const condensed = await summarizeHistory(rawHistory);
+
+  const systemPrompt = buildSystemPrompt(profile.promptSections, profile);
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    ...history.map(h => ({ role: h.role as "user" | "assistant" | "system", content: h.content })),
+    ...condensed.map(h => ({ role: h.role as "user" | "assistant" | "system", content: h.content })),
     { role: "user", content: userMessage },
   ];
+
+  // Apply profile model override (if caller didn't specify a specific model)
+  if (profile.model && model === DEFAULT_MODEL) model = profile.model;
 
   let systemInjected = false;
   const start        = Date.now();
   let steps          = 0;
   let consecutiveErrors = 0;
-  let recentErrors: string[] = [];  // collect last few error messages
-  let lastToolSig    = "";          // detect repeated identical tool calls
+  let recentErrors: string[] = [];
+  let lastToolSig    = "";
   let repeatCount    = 0;
-  const allTools     = getAllTools();
+  const profileTools = getToolsForProfile(profile);
+  const maxSteps     = profile.maxSteps || MAX_STEPS;
+  const maxTokens    = profile.maxTokens || 16384;
+  const maxOutput    = profile.maxOutputChars || MAX_OUTPUT_CHARS;
   // Pick a fallback from the same provider family
   const fallback     = model.startsWith("openrouter/") ? OR_FALLBACK_MODEL : FALLBACK_MODEL;
 
-  while (steps < MAX_STEPS) {
+  console.log(`[agent] Profile: ${profile.name} | tools: ${profileTools.length} | maxSteps: ${maxSteps} | maxTokens: ${maxTokens}`);
+
+  while (steps < maxSteps) {
     steps++;
     yield { type: "thinking" };
 
@@ -1264,26 +1622,29 @@ async function* runAgent(
       response = await client.chat.completions.create({
         model,
         messages,
-        tools:       allTools,
-        tool_choice: "auto",
+        tools:       profileTools.length > 0 ? profileTools : undefined,
+        tool_choice: profileTools.length > 0 ? "auto" : undefined,
         // @ts-ignore — LiteLLM extension: system passed as extra field
-        system:      fullSystemPrompt(),
-        max_tokens:  16384,
+        system:      systemPrompt,
+        max_tokens:  maxTokens,
       } as any);
     } catch (firstErr: any) {
       // Some providers don't accept the non-standard 'system' kwarg; prepend it
       if (firstErr?.message?.includes("system") && !systemInjected) {
-        messages.unshift({ role: "system", content: fullSystemPrompt() });
+        messages.unshift({ role: "system", content: systemPrompt });
         systemInjected = true;
         try {
           response = await client.chat.completions.create({
-            model, messages, tools: allTools, tool_choice: "auto", max_tokens: 8192,
+            model, messages,
+            tools: profileTools.length > 0 ? profileTools : undefined,
+            tool_choice: profileTools.length > 0 ? "auto" : undefined,
+            max_tokens: maxTokens,
           } as any);
         } catch (e2: any) {
           const err2 = String(e2.message ?? e2);
           if (model !== fallback) {
             console.warn(`[agent] Model ${model} failed (${err2}), trying ${fallback}`);
-            yield* runAgent(userMessage, fallback, history);
+            yield* runAgent(userMessage, fallback, history, profile);
             return;
           }
           yield { type: "result", text: `AI service error: ${err2}`, elapsed: (Date.now() - start) / 1000, model };
@@ -1293,7 +1654,7 @@ async function* runAgent(
         const err = String(firstErr.message ?? firstErr);
         if (model !== fallback) {
           console.warn(`[agent] Model ${model} failed (${err}), trying ${fallback}`);
-          yield* runAgent(userMessage, fallback, history);
+          yield* runAgent(userMessage, fallback, history, profile);
           return;
         }
         yield { type: "result", text: `AI service error: ${err}`, elapsed: (Date.now() - start) / 1000, model };
@@ -1307,7 +1668,7 @@ async function* runAgent(
     }
 
     const choice = response.choices[0];
-    console.log(`[agent] Step ${steps}: finish_reason=${choice.finish_reason}, tool_calls=${choice.message?.tool_calls?.length ?? 0}, content_len=${choice.message?.content?.length ?? 0}`);
+    console.log(`[agent] Step ${steps}/${maxSteps}: finish_reason=${choice.finish_reason}, tool_calls=${choice.message?.tool_calls?.length ?? 0}, content_len=${choice.message?.content?.length ?? 0}`);
 
     // Detect output truncation — response was cut off mid-generation
     if (choice.finish_reason === "length") {
@@ -1320,7 +1681,7 @@ async function* runAgent(
           "Each command must be SHORT ENOUGH to fit in a single response. Try again with a smaller chunk.",
       } as any);
       yield { type: "progress", text: "⚠️ Output was truncated, retrying with smaller chunks…" };
-      continue;  // retry the step
+      continue;
     }
 
     const msg = choice.message;
@@ -1349,7 +1710,11 @@ async function* runAgent(
       yield { type: "progress", text: toolLabel(fnName, fnArgs) };
 
       console.log(`[agent] Tool call: ${fnName}(${Object.keys(fnArgs).join(", ")})`);
-      const toolResult = await dispatchTool(fnName, fnArgs);
+      let toolResult = await dispatchTool(fnName, fnArgs);
+      // Truncate to profile's output limit
+      if (toolResult.length > maxOutput) {
+        toolResult = toolResult.slice(0, maxOutput) + `\n... [truncated, ${toolResult.length} total chars]`;
+      }
       console.log(`[agent]   → ${String(toolResult).slice(0, 200)}`);
 
       messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult } as any);
@@ -1399,7 +1764,7 @@ async function* runAgent(
     }
 
     // Budget warning — inject a nudge when getting close to step limit
-    if (steps === MAX_STEPS - 3) {
+    if (steps === maxSteps - 3 && maxSteps > 5) {
       messages.push({
         role: "system",
         content: "WARNING: You are running low on steps (3 remaining). Wrap up now: finish the current operation, report what you've done, and stop. Do NOT start new searches or explorations.",
@@ -1425,6 +1790,8 @@ expressApp.get("/health", (_req, res) => {
   res.json({
     status:          "ok",
     model:           DEFAULT_MODEL,
+    router_model:    ROUTER_MODEL,
+    profiles:        Object.keys(TASK_PROFILES),
     scheduler:       scheduler.running ? "running" : "stopped",
     scheduled_jobs:  scheduler.jobCount,
     custom_skills:   cachedCustomTools.length,
@@ -1466,20 +1833,30 @@ expressApp.post("/transcribe", upload.single("file"), async (req: Request, res: 
 });
 
 expressApp.post("/task", async (req: Request, res: Response) => {
-  const { message = "", model = DEFAULT_MODEL, history = [] } = req.body ?? {};
+  const { message = "", model = DEFAULT_MODEL, history = [], profile: profileName } = req.body ?? {};
   const trimmedHistory = history.length > 20 ? history.slice(-20) : history;
 
   if (!String(message).trim()) { res.status(400).json({ error: "No message provided" }); return; }
 
-  console.log(`[agent] Task received: ${String(message).slice(0, 100)}`);
+  const msg = String(message).trim();
+  console.log(`[agent] Task received: ${msg.slice(0, 100)}`);
+
+  // Route to the right profile: explicit profile > router > general
+  let profile: TaskProfile;
+  if (profileName && TASK_PROFILES[profileName]) {
+    profile = TASK_PROFILES[profileName];
+    console.log(`[agent] Using explicit profile: ${profileName}`);
+  } else {
+    profile = await routeTask(msg);
+  }
 
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Transfer-Encoding", "chunked");
 
   try {
-    for await (const event of runAgent(String(message).trim(), model, trimmedHistory)) {
+    for await (const event of runAgent(msg, model, trimmedHistory, profile)) {
       res.write(JSON.stringify(event) + "\n");
-      if (event.type === "result") console.log(`[agent] Task done in ${event.elapsed}s`);
+      if (event.type === "result") console.log(`[agent] Task done in ${event.elapsed}s (profile: ${profile.name})`);
     }
   } catch (e) {
     console.error("[agent] Unhandled exception in streaming generator:", e);
@@ -1503,17 +1880,17 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   }
 
   const {
-    channel   = "unknown",   // "forum", "github", "slack", etc.
-    event     = "message",   // "new_post", "new_comment", "push", etc.
-    thread_id = "",          // unique ID for conversation continuity
-    author    = {},          // { name, email, role }
-    content   = "",          // the message text
-    title     = "",          // post/PR title
-    images    = [],          // array of image URLs
-    metadata  = {},          // any extra data (post_id, category, link, etc.)
-    model: reqModel,         // optional model override
-    auto_respond = true,     // if true, run the agent to generate a response
-    notify_chat_ids = [],    // optional per-channel Telegram recipient IDs
+    channel   = "unknown",
+    event     = "message",
+    thread_id = "",
+    author    = {},
+    content   = "",
+    title     = "",
+    images    = [],
+    metadata  = {},
+    model: reqModel,
+    auto_respond = true,
+    notify_chat_ids = [],
   } = req.body ?? {};
 
   if (!content && !title) {
@@ -1521,29 +1898,12 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     return;
   }
 
+  // Deterministic routing — no LLM call needed for inbound events
+  const profile = routeInboundEvent(event, auto_respond);
   const threadKey = thread_id || `${channel}_${Date.now()}`;
-  console.log(`[inbound] ${channel}/${event} thread=${threadKey} author=${author?.name ?? "?"}`);
+  console.log(`[inbound] ${channel}/${event} thread=${threadKey} author=${author?.name ?? "?"} profile=${profile.name}`);
 
-  // Build the message the agent will see
-  const contextParts: string[] = [
-    `[Inbound message from ${channel}]`,
-    `Event: ${event}`,
-  ];
-  if (title)       contextParts.push(`Title: ${title}`);
-  if (author?.name) contextParts.push(`Author: ${author.name}${author.role ? ` (${author.role})` : ""}`);
-  if (metadata?.link)     contextParts.push(`Link: ${metadata.link}`);
-  if (metadata?.post_id)  contextParts.push(`Post ID: ${metadata.post_id}`);
-  if (metadata?.category) contextParts.push(`Category: ${metadata.category}`);
-  if (content)     contextParts.push(`\nContent:\n${content}`);
-  if (images?.length) contextParts.push(`\nAttached images: ${images.join(", ")}`);
-  contextParts.push(`\nInstructions: Use the reply_to_forum tool to post your response. In your final message, include the FULL text of what you replied so the admin can see it.`);
-
-  const userMessage = contextParts.join("\n");
-
-  // Save to thread history
-  appendToThread(channel, threadKey, "user", userMessage);
-
-  // Forward to Telegram as CRM notification (structured, plain text — no Markdown)
+  // Build CRM notification (always sent, regardless of profile)
   const eventLabels: Record<string, string> = {
     new_topic:        "🆕 New post",
     new_comment:      "💬 New comment",
@@ -1567,8 +1927,8 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   const chatIds = Array.isArray(notify_chat_ids) && notify_chat_ids.length > 0 ? notify_chat_ids : undefined;
   notifyTelegram(tgLines.join("\n"), chatIds).catch(() => {});
 
-  // If auto_respond is false, just acknowledge receipt
-  if (!auto_respond) {
+  // ── Notify-only profile: no LLM call at all ────────────────────────────
+  if (profile.name === "inbound_notify") {
     res.json({
       status: "received",
       thread_id: threadKey,
@@ -1577,36 +1937,88 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     return;
   }
 
-  // Run the agent with thread history for context
+  // Build context message
+  const contextParts: string[] = [
+    `[Inbound message from ${channel}]`,
+    `Event: ${event}`,
+  ];
+  if (title)       contextParts.push(`Title: ${title}`);
+  if (author?.name) contextParts.push(`Author: ${author.name}${author.role ? ` (${author.role})` : ""}`);
+  if (metadata?.link)     contextParts.push(`Link: ${metadata.link}`);
+  if (metadata?.post_id)  contextParts.push(`Post ID: ${metadata.post_id}`);
+  if (metadata?.category) contextParts.push(`Category: ${metadata.category}`);
+  if (content)     contextParts.push(`\nContent:\n${content}`);
+  if (images?.length) contextParts.push(`\nAttached images: ${images.join(", ")}`);
+
+  const userMessage = contextParts.join("\n");
+  appendToThread(channel, threadKey, "user", userMessage);
+
   const thread = getThread(channel, threadKey);
-  const model = reqModel ?? DEFAULT_MODEL;
-
-  // Build history from thread (exclude the current message — it's in userMessage)
-  const history = thread.history.slice(0, -1).map(h => ({
-    role: h.role,
-    content: h.content,
-  }));
-
-  // Stream the agent response
-  res.setHeader("Content-Type", "application/json");
+  // Use profile's preferred model, or request override, or default
+  const model = reqModel ?? profile.model ?? DEFAULT_MODEL;
+  const history = thread.history.slice(0, -1).map(h => ({ role: h.role, content: h.content }));
 
   let resultText = "(no response)";
   let elapsed = 0;
-  try {
-    for await (const event of runAgent(userMessage, model, history)) {
-      if (event.type === "result") {
-        resultText = event.text ?? "(no response)";
-        elapsed = event.elapsed ?? 0;
+
+  // ── Single-shot profile: one LLM call, then directly post reply ────────
+  if (profile.singleShot) {
+    console.log(`[inbound] Single-shot mode (${profile.name})`);
+
+    // Build a focused prompt — no tool instructions needed
+    const singleShotPrompt = `You are a helpful AI assistant on a WordPress forum. Reply to the following forum message.
+Be helpful, friendly, and concise. If the user asks a question about the site, answer based on your knowledge.
+Do NOT say things like "I'll use the reply_to_forum tool" — just write the reply content directly.
+Your entire response will be posted as a comment on the forum topic.`;
+
+    try {
+      const condensedHistory = await summarizeHistory(history);
+      const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+        { role: "system", content: singleShotPrompt },
+        ...condensedHistory.map(h => ({ role: h.role as "user" | "assistant" | "system", content: h.content })),
+        { role: "user", content: userMessage },
+      ];
+
+      const start = Date.now();
+      const resp = await client.chat.completions.create({
+        model,
+        messages,
+        max_tokens: profile.maxTokens,
+        temperature: 0.7,
+      });
+      resultText = resp.choices?.[0]?.message?.content ?? "(no response)";
+      elapsed = (Date.now() - start) / 1000;
+
+      // Directly post the reply — no tool call overhead
+      if (resultText && resultText !== "(no response)" && metadata?.post_id) {
+        const postResult = await replyToForum(Number(metadata.post_id), resultText);
+        console.log(`[inbound] Direct reply result: ${postResult}`);
       }
+    } catch (e: any) {
+      console.error(`[inbound] Single-shot error: ${e}`);
+      resultText = `Error generating reply: ${e.message ?? e}`;
     }
-  } catch (e) {
-    resultText = `Agent error: ${e}`;
-    console.error(`[inbound] Agent error: ${e}`);
+  } else {
+    // ── Full agentic loop (for complex tasks) ──────────────────────────
+    contextParts.push(`\nInstructions: Use the reply_to_forum tool to post your response. In your final message, include the FULL text of what you replied so the admin can see it.`);
+    const agentMessage = contextParts.join("\n");
+
+    try {
+      for await (const ev of runAgent(agentMessage, model, history, profile)) {
+        if (ev.type === "result") {
+          resultText = ev.text ?? "(no response)";
+          elapsed = ev.elapsed ?? 0;
+        }
+      }
+    } catch (e) {
+      resultText = `Agent error: ${e}`;
+      console.error(`[inbound] Agent error: ${e}`);
+    }
   }
 
   // Save agent response to thread
   appendToThread(channel, threadKey, "assistant", resultText);
-  console.log(`[inbound] Response for ${channel}/${threadKey} in ${elapsed}s`);
+  console.log(`[inbound] Response for ${channel}/${threadKey} in ${elapsed}s (profile: ${profile.name})`);
 
   // Notify Telegram of the agent's response
   if (resultText && resultText !== "(no response)") {
@@ -1627,6 +2039,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     response: resultText,
     elapsed,
     model,
+    profile: profile.name,
   });
 });
 
@@ -1661,7 +2074,8 @@ expressApp.get("/skills", (_req, res) => {
 expressApp.post("/reload-skills", (_req, res) => {
   const oldCount    = cachedCustomTools.length;
   cachedCustomTools = loadCustomSkills();
-  cachedMarkdownSkills = loadMarkdownSkills();
+  cachedMarkdownSkillList = loadMarkdownSkillList();
+  cachedMarkdownSkills = getMarkdownSkills(["*"]);
   res.json({ loaded: cachedCustomTools.length, previous: oldCount, skills: cachedCustomTools.map(t => t.function.name) });
 });
 
@@ -1747,7 +2161,8 @@ expressApp.post("/skills", (req, res) => {
     fs.mkdirSync(SKILLS_DIR, { recursive: true });
     const filePath = path.join(SKILLS_DIR, `${mdName}.md`);
     fs.writeFileSync(filePath, mdContent);
-    cachedMarkdownSkills = loadMarkdownSkills();
+    cachedMarkdownSkillList = loadMarkdownSkillList();
+  cachedMarkdownSkills = getMarkdownSkills(["*"]);
     console.log(`[skills] Markdown skill created/updated: ${mdName}`);
     res.json({ status: "created", name: mdName, type: "markdown", file: `${mdName}.md` });
     return;
@@ -1815,7 +2230,8 @@ expressApp.delete("/skills/:name", (req, res) => {
     const mdPath = path.join(SKILLS_DIR, `${name}.md`);
     if (fs.existsSync(mdPath)) {
       fs.unlinkSync(mdPath);
-      cachedMarkdownSkills = loadMarkdownSkills();
+      cachedMarkdownSkillList = loadMarkdownSkillList();
+  cachedMarkdownSkills = getMarkdownSkills(["*"]);
       console.log(`[skills] Markdown skill deleted: ${name}`);
       res.json({ status: "deleted", name });
       return;
@@ -1889,8 +2305,9 @@ async function main(): Promise<void> {
   cachedCustomTools = loadCustomSkills();
   console.log(`[agent] Custom skills loaded: ${cachedCustomTools.length}`);
 
-  cachedMarkdownSkills = loadMarkdownSkills();
-  console.log(`[agent] Markdown knowledge loaded: ${cachedMarkdownSkills.length} chars`);
+  cachedMarkdownSkillList = loadMarkdownSkillList();
+  cachedMarkdownSkills = getMarkdownSkills(["*"]);  // legacy compat
+  console.log(`[agent] Markdown knowledge loaded: ${cachedMarkdownSkillList.length} skill(s), ${cachedMarkdownSkills.length} chars total`);
 
   cachedMcpTools = await loadMcpTools();
   console.log(`[agent] MCP tools loaded: ${cachedMcpTools.length}`);

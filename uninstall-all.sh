@@ -118,17 +118,17 @@ fi
 
 # ── Bridge plugin ─────────────────────────────────────────────────────────────
 PLUGIN_DIR=""
-if [[ -n "$WP_PATH" ]] && [[ -d "$WP_PATH/wp-content/plugins/openclaw-wp-bridge" ]]; then
-    PLUGIN_DIR="$WP_PATH/wp-content/plugins/openclaw-wp-bridge"
-elif [[ -d "/var/www/html/wp-content/plugins/openclaw-wp-bridge" ]]; then
-    PLUGIN_DIR="/var/www/html/wp-content/plugins/openclaw-wp-bridge"
+if [[ -n "$WP_PATH" ]] && [[ -d "$WP_PATH/wp-content/plugins/greenclaw-wp-bridge" ]]; then
+    PLUGIN_DIR="$WP_PATH/wp-content/plugins/greenclaw-wp-bridge"
+elif [[ -d "/var/www/html/wp-content/plugins/greenclaw-wp-bridge" ]]; then
+    PLUGIN_DIR="/var/www/html/wp-content/plugins/greenclaw-wp-bridge"
 fi
 
 if [[ -n "$PLUGIN_DIR" ]]; then
     WP_ROOT=$(dirname "$(dirname "$PLUGIN_DIR")")
     if command -v wp &>/dev/null; then
         task "Deactivating bridge plugin" \
-            wp plugin deactivate openclaw-wp-bridge \
+            wp plugin deactivate greenclaw-wp-bridge \
                 --path="$WP_ROOT" --allow-root || true
     fi
     task "Removing bridge plugin files" \

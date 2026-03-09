@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-agent",
+  "name": "greenclaw-agent",
   "version": "1.0.0",
   "description": "WordPress AI Agent — TypeScript",
   "scripts": {

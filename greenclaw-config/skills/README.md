@@ -1,4 +1,4 @@
-# Custom Skills — OpenClaw WordPress Agent
+# Custom Skills — GreenClaw WordPress Agent
 
 Drop `.yaml` files in this directory to add new tools to the AI agent.
 The agent reloads skills automatically on startup, or on demand via `/skill reload` in Telegram.
@@ -119,7 +119,7 @@ parameters:
 >
 > Then reload Squid:
 > ```bash
-> docker exec openclaw-squid squid -k reconfigure
+> docker exec greenclaw-squid squid -k reconfigure
 > ```
 
 ---
@@ -165,4 +165,4 @@ Example pattern:
 2. Create a skill YAML pointing to `http://my-mcp-server:8000/tools/invoke`.
 3. `/skill reload` and start using it.
 
-Future versions of OpenClaw may add native MCP transport (SSE/stdio) support.
+Future versions of GreenClaw may add native MCP transport (SSE/stdio) support.

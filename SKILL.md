@@ -131,17 +131,17 @@ wp transient delete --all --path=/var/www/html
 
 ## How to Use the Abilities API (via REST)
 
-The WordPress site exposes abilities at `/wp-json/openclaw/v1/`:
+The WordPress site exposes abilities at `/wp-json/greenclaw/v1/`:
 
 ```bash
 # List all abilities
-curl -u admin:APP_PASSWORD https://your-site.com/wp-json/openclaw/v1/abilities
+curl -u admin:APP_PASSWORD https://your-site.com/wp-json/greenclaw/v1/abilities
 
 # Execute an ability
 curl -X POST -u admin:APP_PASSWORD \
   -H "Content-Type: application/json" \
-  -d '{"ability": "openclaw/create-post", "input": {"title": "Hello", "content": "World"}}' \
-  https://your-site.com/wp-json/openclaw/v1/execute
+  -d '{"ability": "greenclaw/create-post", "input": {"title": "Hello", "content": "World"}}' \
+  https://your-site.com/wp-json/greenclaw/v1/execute
 ```
 
 ## How to Use the MCP Adapter
@@ -476,7 +476,7 @@ wp user create editor editor@example.com \
 wp user set-role 2 administrator --path=/wordpress --allow-root
 
 # Create application password (for API access)
-wp user application-password create 1 "OpenClaw Agent" \
+wp user application-password create 1 "GreenClaw Agent" \
   --path=/wordpress --allow-root
 ```
 

@@ -33,6 +33,13 @@ model_list:
       api_key: os.environ/ANTHROPIC_API_KEY
       max_tokens: 4096
 
+  # Alias for the router/cheap tasks — resolves to Haiku
+  - model_name: claude-haiku
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+      max_tokens: 4096
+
   # ── OpenAI / ChatGPT ──────────────────────────────────────────────────────
   - model_name: gpt-4o
     litellm_params:
@@ -85,6 +92,13 @@ model_list:
       max_tokens: 16384
 
   - model_name: openrouter/claude-haiku-4-5
+    litellm_params:
+      model: openrouter/anthropic/claude-haiku-4.5
+      api_key: os.environ/OPENROUTER_API_KEY
+      max_tokens: 4096
+
+  # Alias for the router/cheap tasks via OpenRouter
+  - model_name: openrouter/claude-haiku
     litellm_params:
       model: openrouter/anthropic/claude-haiku-4.5
       api_key: os.environ/OPENROUTER_API_KEY
@@ -170,9 +184,25 @@ router_settings:
     - openrouter/claude-sonnet-4-6: ["openrouter/gpt-4o", "openrouter/gemini-2.0-flash", "openrouter/deepseek-chat"]
     - openrouter/claude-opus-4-6: ["openrouter/claude-sonnet-4-6", "openrouter/deepseek-chat"]
     - openrouter/deepseek-chat: ["openrouter/claude-sonnet-4-6", "openrouter/gemini-2.0-flash"]
+    - claude-haiku: ["gpt-4o-mini", "gemini-2.0-flash"]
+    - openrouter/claude-haiku: ["openrouter/gpt-4o-mini", "openrouter/gemini-2.0-flash"]
 
 litellm_settings:
   # Request timeout in seconds
   request_timeout: 300
   # Allow empty API keys (LiteLLM will just skip that provider)
   drop_params: true
+
+  # ── Response caching ─────────────────────────────────────────────────────
+  # Cache identical requests in memory (TTL = 1 hour).
+  # Saves money when the same question is asked multiple times (e.g. forum FAQs).
+  cache: true
+  cache_params:
+    type: "local"            # in-memory cache (no Redis needed)
+    ttl: 3600                # cache responses for 1 hour
+
+  # ── Prompt caching (Anthropic) ───────────────────────────────────────────
+  # Anthropic caches static prompt prefixes (system prompt) across calls.
+  # Same system prompt = 90% discount on input tokens for cached portion.
+  # This is automatic when using anthropic/ models — LiteLLM passes it through.
+  cache_control_injection_for_anthropic: true

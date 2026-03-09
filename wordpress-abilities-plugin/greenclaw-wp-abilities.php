@@ -1,12 +1,12 @@
 <?php
 /**
- * Plugin Name: OpenClaw WP Abilities
- * Description: Custom WordPress Abilities for the OpenClaw AI agent, exposed
+ * Plugin Name: GreenClaw WP Abilities
+ * Description: Custom WordPress Abilities for the GreenClaw AI agent, exposed
  *              as MCP tools via the WordPress MCP Adapter.
  * Version:     1.0.0
  * Requires at least: 7.0
  * Requires PHP: 8.0
- * Author:      OpenClaw
+ * Author:      GreenClaw
  * License:     GPL-2.0+
  */
 
@@ -14,30 +14,30 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-add_action( 'wp_abilities_api_categories_init', 'openclaw_register_ability_category' );
-add_action( 'wp_abilities_api_init', 'openclaw_register_abilities' );
+add_action( 'wp_abilities_api_categories_init', 'greenclaw_register_ability_category' );
+add_action( 'wp_abilities_api_init', 'greenclaw_register_abilities' );
 
-function openclaw_register_ability_category(): void {
+function greenclaw_register_ability_category(): void {
     if ( ! function_exists( 'wp_register_ability_category' ) ) {
         return;
     }
-    wp_register_ability_category( 'openclaw', array(
-        'label'       => __( 'OpenClaw', 'openclaw' ),
-        'description' => __( 'Custom abilities for the OpenClaw AI agent.', 'openclaw' ),
+    wp_register_ability_category( 'greenclaw', array(
+        'label'       => __( 'GreenClaw', 'greenclaw' ),
+        'description' => __( 'Custom abilities for the GreenClaw AI agent.', 'greenclaw' ),
     ) );
 }
 
-function openclaw_register_abilities(): void {
+function greenclaw_register_abilities(): void {
     if ( ! function_exists( 'wp_register_ability' ) ) {
         return;
     }
 
     wp_register_ability(
-        'openclaw/toggle-maintenance-mode',
+        'greenclaw/toggle-maintenance-mode',
         array(
-            'label'       => __( 'Toggle Maintenance Mode', 'openclaw' ),
-            'description' => __( 'Enable, disable, or check WordPress maintenance mode. When enabled, visitors see a "briefly unavailable for scheduled maintenance" message.', 'openclaw' ),
-            'category'    => 'openclaw',
+            'label'       => __( 'Toggle Maintenance Mode', 'greenclaw' ),
+            'description' => __( 'Enable, disable, or check WordPress maintenance mode. When enabled, visitors see a "briefly unavailable for scheduled maintenance" message.', 'greenclaw' ),
+            'category'    => 'greenclaw',
             'input_schema' => array(
                 'type'       => 'object',
                 'properties' => array(
@@ -56,7 +56,7 @@ function openclaw_register_abilities(): void {
                     'message'          => array( 'type' => 'string' ),
                 ),
             ),
-            'execute_callback'    => 'openclaw_toggle_maintenance',
+            'execute_callback'    => 'greenclaw_toggle_maintenance',
             'permission_callback' => function () {
                 return current_user_can( 'manage_options' );
             },
@@ -68,11 +68,11 @@ function openclaw_register_abilities(): void {
     );
 
     wp_register_ability(
-        'openclaw/update-site-identity',
+        'greenclaw/update-site-identity',
         array(
-            'label'       => __( 'Update Site Identity', 'openclaw' ),
-            'description' => __( 'Bulk update site title, tagline, and/or site icon in a single call. Pass any combination of fields.', 'openclaw' ),
-            'category'    => 'openclaw',
+            'label'       => __( 'Update Site Identity', 'greenclaw' ),
+            'description' => __( 'Bulk update site title, tagline, and/or site icon in a single call. Pass any combination of fields.', 'greenclaw' ),
+            'category'    => 'greenclaw',
             'input_schema' => array(
                 'type'       => 'object',
                 'properties' => array(
@@ -88,7 +88,7 @@ function openclaw_register_abilities(): void {
                     'current' => array( 'type' => 'object' ),
                 ),
             ),
-            'execute_callback'    => 'openclaw_update_site_identity',
+            'execute_callback'    => 'greenclaw_update_site_identity',
             'permission_callback' => function () {
                 return current_user_can( 'manage_options' );
             },
@@ -101,7 +101,7 @@ function openclaw_register_abilities(): void {
 }
 
 
-function openclaw_toggle_maintenance( array $input ): array {
+function greenclaw_toggle_maintenance( array $input ): array {
     $file   = ABSPATH . '.maintenance';
     $action = $input['action'] ?? 'status';
 
@@ -132,7 +132,7 @@ function openclaw_toggle_maintenance( array $input ): array {
 }
 
 
-function openclaw_update_site_identity( array $input ): array {
+function greenclaw_update_site_identity( array $input ): array {
     $updated = array();
 
     if ( isset( $input['title'] ) ) {
