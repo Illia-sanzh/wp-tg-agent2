@@ -320,7 +320,7 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
     maxSteps: 2,
     maxTokens: 1024,
     maxOutputChars: 2000,
-    model: ROUTER_MODEL,     // use cheap model for forum replies
+    model: "cheap",          // resolved at runtime via pickAvailableModel()
     singleShot: true,
   },
   inbound_notify: {
@@ -335,7 +335,7 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
   },
   wp_admin: {
     name: "wp_admin",
-    tools: ["run_command", "wp_rest", "wp_cli_remote", "write_file", "reply_to_forum", "wp_ability__"],
+    tools: ["run_command", "read_file", "wp_rest", "wp_cli_remote", "write_file", "reply_to_forum", "wp_ability__"],
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "abilities"],
     knowledgePatterns: [],
     skillFileSections: ["capabilities", "wpcli", "safety", "guardrails", "content_formatting", "common_skills"],
@@ -355,7 +355,7 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
   },
   web_design: {
     name: "web_design",
-    tools: ["run_command", "wp_rest", "write_file", "fetch_page", "skill_", "wp_cli_remote"],
+    tools: ["run_command", "read_file", "wp_rest", "write_file", "fetch_page", "skill_", "wp_cli_remote"],
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "web_design", "custom_skills"],
     knowledgePatterns: ["*"],  // all .md knowledge skills (web-design, greenshift-blocks, etc.)
     skillFileSections: ["capabilities", "wpcli", "safety", "content_formatting", "web_design_workflow"],
@@ -379,8 +379,61 @@ const DEFAULT_PROFILE = TASK_PROFILES.general;
 
 // ─── Router — cheap LLM call to classify task and pick a profile ─────────────
 
+// Probe which models are actually reachable on startup.
+// Sends a 1-token request to each candidate model; if it 401s or times out, mark unavailable.
+const _availableModels = new Set<string>();
+let _modelsProbed = false;
+
+async function probeModels(): Promise<void> {
+  if (_modelsProbed) return;
+  _modelsProbed = true;
+
+  // Models we actually use in the agent (no need to probe every LiteLLM model)
+  const candidates = [
+    ROUTER_MODEL,
+    DEFAULT_MODEL,
+    FALLBACK_MODEL,
+    OR_FALLBACK_MODEL,
+  ].filter(Boolean);
+  // Deduplicate
+  const unique = [...new Set(candidates)];
+
+  console.log(`[probe] Testing ${unique.length} model(s): ${unique.join(", ")}`);
+
+  await Promise.allSettled(unique.map(async (m) => {
+    try {
+      await client.chat.completions.create({
+        model: m,
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 1,
+      });
+      _availableModels.add(m);
+      console.log(`[probe] ✓ ${m}`);
+    } catch (e: any) {
+      const msg = String(e?.message ?? e).slice(0, 120);
+      // Timeout or rate-limit might be transient — give benefit of the doubt
+      if (msg.includes("timeout") || msg.includes("429")) {
+        _availableModels.add(m);
+        console.log(`[probe] ~ ${m} (transient: ${msg})`);
+      } else {
+        console.log(`[probe] ✗ ${m} (${msg})`);
+      }
+    }
+  }));
+
+  console.log(`[probe] Available models: ${[..._availableModels].join(", ") || "(none)"}`);
+}
+
+/** Pick best available model from a preference list */
+function pickAvailableModel(...prefs: string[]): string {
+  for (const m of prefs) {
+    if (_availableModels.has(m)) return m;
+  }
+  // Nothing probed as available — return first pref and let LiteLLM try
+  return prefs[0] ?? DEFAULT_MODEL;
+}
+
 async function routeTask(message: string): Promise<TaskProfile> {
-  const profileNames = Object.keys(TASK_PROFILES).filter(k => k !== "general");
   const routerPrompt = `You are a task router. Given a user message, classify it into exactly one category.
 Categories:
 - forum_reply: replying to a forum post or comment, answering a question from a forum user
@@ -392,9 +445,12 @@ Categories:
 
 Respond with ONLY the category name, nothing else.`;
 
+  // Use whichever cheap model is actually reachable
+  const routerModel = pickAvailableModel(ROUTER_MODEL, `openrouter/claude-haiku`, "openrouter/gpt-4o-mini", DEFAULT_MODEL);
+
   try {
     const resp = await client.chat.completions.create({
-      model: ROUTER_MODEL,
+      model: routerModel,
       messages: [
         { role: "system", content: routerPrompt },
         { role: "user", content: message.slice(0, 500) },
@@ -404,7 +460,7 @@ Respond with ONLY the category name, nothing else.`;
     });
     const category = (resp.choices?.[0]?.message?.content ?? "").trim().toLowerCase().replace(/[^a-z_]/g, "");
     if (TASK_PROFILES[category]) {
-      console.log(`[router] Classified as: ${category}`);
+      console.log(`[router] Classified as: ${category} (via ${routerModel})`);
       return TASK_PROFILES[category];
     }
     console.log(`[router] Unknown category "${category}", using general`);
@@ -629,8 +685,9 @@ async function summarizeHistory(history: Array<{ role: string; content: string }
   const toKeep = history.slice(-4);
 
   try {
+    const cheapModel = pickAvailableModel(ROUTER_MODEL, `openrouter/claude-haiku`, "openrouter/gpt-4o-mini", DEFAULT_MODEL);
     const summaryResp = await client.chat.completions.create({
-      model: ROUTER_MODEL,
+      model: cheapModel,
       messages: [
         { role: "system", content: "Summarize this conversation history in 2-3 concise sentences. Focus on: what was discussed, what actions were taken, and any important context for continuing the conversation. Be factual and brief." },
         { role: "user", content: toSummarize.map(m => `${m.role}: ${m.content}`).join("\n\n").slice(0, 3000) },
@@ -738,16 +795,34 @@ const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "write_file",
+      name: "read_file",
       description:
-        "Write content to a file on the agent server. Use this to create HTML, CSS, or " +
-        "any text files. PREFERRED over run_command with cat/heredoc for writing files — " +
-        "especially large HTML files. You can call this multiple times with append=true " +
-        "to build up a file in chunks.",
+        "Read the contents of a file. Use this to inspect plugin/theme PHP code before modifying it. " +
+        "Reads from anywhere under the WordPress directory or /tmp/.",
       parameters: {
         type: "object",
         properties: {
-          path:    { type: "string", description: "Absolute file path, e.g. /tmp/design.html" },
+          path:   { type: "string", description: "Absolute file path, e.g. /wordpress/wp-content/plugins/myplugin/myplugin.php" },
+          reason: { type: "string", description: "One short sentence describing why you're reading this file." },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description:
+        "Write content to a file on the agent server. Use this to create or modify HTML, CSS, PHP, " +
+        "or any text files. PREFERRED over run_command with cat/heredoc for writing files — " +
+        "especially large HTML files. You can call this multiple times with append=true " +
+        "to build up a file in chunks. " +
+        "Allowed paths: /tmp/, WordPress plugins/themes/mu-plugins directories.",
+      parameters: {
+        type: "object",
+        properties: {
+          path:    { type: "string", description: "Absolute file path. Allowed: /tmp/*, /wordpress/wp-content/plugins/*, /wordpress/wp-content/themes/*, /wordpress/wp-content/mu-plugins/*" },
           content: { type: "string", description: "The text content to write to the file." },
           append:  { type: "boolean", description: "If true, append to the file instead of overwriting. Default: false." },
           reason:  { type: "string", description: "One short sentence describing what this step does." },
@@ -1435,17 +1510,31 @@ async function uploadMediaToWp(
   }
 }
 
+// Directories the agent is allowed to write to
+const WRITABLE_PATHS = [
+  "/tmp/",
+  `${WP_PATH}/wp-content/plugins/`,
+  `${WP_PATH}/wp-content/themes/`,
+  `${WP_PATH}/wp-content/mu-plugins/`,
+];
+
 function writeFile(filePath: string, content: string, append: boolean): string {
-  if (!filePath || !filePath.startsWith("/tmp/")) return "ERROR: Can only write to /tmp/ directory.";
+  if (!filePath) return "ERROR: No file path provided.";
+  // Normalize and prevent path traversal
+  const normalized = path.resolve(filePath);
+  const allowed = WRITABLE_PATHS.some(p => normalized.startsWith(path.resolve(p)));
+  if (!allowed) return `ERROR: Can only write to: ${WRITABLE_PATHS.join(", ")}`;
   if (!content) return "ERROR: No content provided.";
   try {
+    // Ensure parent directory exists
+    fs.mkdirSync(path.dirname(normalized), { recursive: true });
     if (append) {
-      fs.appendFileSync(filePath, content, "utf8");
+      fs.appendFileSync(normalized, content, "utf8");
     } else {
-      fs.writeFileSync(filePath, content, "utf8");
+      fs.writeFileSync(normalized, content, "utf8");
     }
-    const stat = fs.statSync(filePath);
-    return `OK: ${append ? "Appended to" : "Wrote"} ${filePath} (${stat.size} bytes total)`;
+    const stat = fs.statSync(normalized);
+    return `OK: ${append ? "Appended to" : "Wrote"} ${normalized} (${stat.size} bytes total)`;
   } catch (e: any) {
     return `ERROR: ${e.message}`;
   }
@@ -1478,8 +1567,28 @@ async function replyToForum(postId: number, content: string): Promise<string> {
   }
 }
 
+function readFile(filePath: string): string {
+  if (!filePath) return "ERROR: No file path provided.";
+  const normalized = path.resolve(filePath);
+  // Allow reading from WP directory and /tmp
+  const readablePaths = ["/tmp/", path.resolve(WP_PATH) + "/"];
+  if (!readablePaths.some(p => normalized.startsWith(p))) {
+    return `ERROR: Can only read files under: ${readablePaths.join(", ")}`;
+  }
+  try {
+    if (!fs.existsSync(normalized)) return `ERROR: File not found: ${normalized}`;
+    const stat = fs.statSync(normalized);
+    if (stat.isDirectory()) return `ERROR: '${normalized}' is a directory. Use run_command with 'ls' to list files.`;
+    if (stat.size > 200_000) return `ERROR: File too large (${stat.size} bytes). Use run_command with 'head' or 'tail' instead.`;
+    return fs.readFileSync(normalized, "utf8");
+  } catch (e: any) {
+    return `ERROR: ${e.message}`;
+  }
+}
+
 async function dispatchTool(name: string, args: Record<string, any>): Promise<string> {
   if (name === "run_command")      return runCommand(args.command ?? "");
+  if (name === "read_file")        return readFile(args.path ?? "");
   if (name === "write_file")       return writeFile(args.path ?? "", args.content ?? "", args.append === true);
   if (name === "wp_rest")          return wpRest(args.method ?? "GET", args.endpoint ?? "/", args.body, args.params);
   if (name === "wp_cli_remote")    return wpCliRemote(args.command ?? "");
@@ -1507,6 +1616,7 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
   if (fnName === "wp_rest")       return reason ? `🌐 ${reason.slice(0, 120)}` : `🌐 ${fnArgs.method ?? "GET"} ${fnArgs.endpoint ?? ""}`;
   if (fnName === "wp_cli_remote") return reason ? `🔧 ${reason.slice(0, 120)}` : `🔧 wp ${(fnArgs.command ?? "").slice(0, 100)}`;
   if (fnName === "schedule_task") return reason ? `⏰ ${reason.slice(0, 120)}` : `⏰ Scheduling: ${(fnArgs.label ?? fnArgs.task ?? "").slice(0, 80)}`;
+  if (fnName === "read_file")     return reason ? `📖 ${reason.slice(0, 120)}` : `📖 Reading: ${(fnArgs.path ?? "").slice(0, 100)}`;
   if (fnName === "write_file")    return reason ? `📝 ${reason.slice(0, 120)}` : `📝 Writing: ${(fnArgs.path ?? "").slice(0, 100)}`;
   if (fnName === "reply_to_forum") return reason ? `💬 ${reason.slice(0, 120)}` : `💬 Replying to forum post ${fnArgs.post_id ?? ""}`;
   if (fnName === "fetch_page")    return reason ? `🌍 ${reason.slice(0, 120)}` : `🌍 Fetching: ${(fnArgs.url ?? "").slice(0, 100)}`;
@@ -1597,8 +1707,23 @@ async function* runAgent(
     { role: "user", content: userMessage },
   ];
 
-  // Apply profile model override (if caller didn't specify a specific model)
-  if (profile.model && model === DEFAULT_MODEL) model = profile.model;
+  // Apply profile model logic:
+  // - If profile has explicit model → use it (e.g. forum_reply uses "cheap" → Haiku)
+  // - If profile has NO model override and the caller sent a cheap model for an agentic
+  //   profile (maxSteps > 5), upgrade to DEFAULT_MODEL. This prevents the bot's
+  //   auto-routing from sending Haiku for tasks that need real reasoning.
+  if (profile.model) {
+    model = profile.model === "cheap"
+      ? pickAvailableModel(ROUTER_MODEL, "openrouter/claude-haiku", "openrouter/gpt-4o-mini", DEFAULT_MODEL)
+      : profile.model;
+  } else if (profile.maxSteps > 5) {
+    // Agentic profile — ensure a capable model is used
+    const cheapModels = ["claude-haiku", "claude-haiku-4-5", "openrouter/claude-haiku", "openrouter/claude-haiku-4-5", "gpt-4o-mini", "openrouter/gpt-4o-mini"];
+    if (cheapModels.includes(model)) {
+      console.log(`[agent] Upgrading model from ${model} → ${DEFAULT_MODEL} for agentic profile '${profile.name}'`);
+      model = DEFAULT_MODEL;
+    }
+  }
 
   let systemInjected = false;
   const start        = Date.now();
@@ -1794,6 +1919,7 @@ expressApp.get("/health", (_req, res) => {
     status:          "ok",
     model:           DEFAULT_MODEL,
     router_model:    ROUTER_MODEL,
+    available_models: [..._availableModels],
     profiles:        Object.keys(TASK_PROFILES),
     scheduler:       scheduler.running ? "running" : "stopped",
     scheduled_jobs:  scheduler.jobCount,
@@ -1958,7 +2084,11 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
 
   const thread = getThread(channel, threadKey);
   // Use profile's preferred model, or request override, or default
-  const model = reqModel ?? profile.model ?? DEFAULT_MODEL;
+  // "cheap" sentinel → resolve to cheapest available model
+  const profileModel = profile.model === "cheap"
+    ? pickAvailableModel(ROUTER_MODEL, "openrouter/claude-haiku", "openrouter/gpt-4o-mini", DEFAULT_MODEL)
+    : profile.model;
+  const model = reqModel ?? profileModel ?? DEFAULT_MODEL;
   const history = thread.history.slice(0, -1).map(h => ({ role: h.role, content: h.content }));
 
   let resultText = "(no response)";
@@ -2084,7 +2214,7 @@ expressApp.post("/reload-skills", (_req, res) => {
 
 // ─── Skill CRUD ────────────────────────────────────────────────────────────────
 
-const BUILTIN_TOOL_NAMES      = new Set(["run_command", "write_file", "wp_rest", "wp_cli_remote", "schedule_task", "reply_to_forum"]);
+const BUILTIN_TOOL_NAMES      = new Set(["run_command", "read_file", "write_file", "wp_rest", "wp_cli_remote", "schedule_task", "reply_to_forum"]);
 const FORBIDDEN_SKILL_COMMANDS = [
   "wp db drop", "wp db reset", "wp site empty", "wp eval", "wp eval-file", "wp shell",
   "rm -rf /", "mkfs", "dd if=", "> /dev/sda", "chmod 777 /",
@@ -2323,6 +2453,8 @@ async function main(): Promise<void> {
 
   expressApp.listen(PORT, "0.0.0.0", () => {
     console.log(`[agent] Listening on port ${PORT}`);
+    // Probe models in background (don't block startup / healthcheck)
+    probeModels().catch(e => console.warn(`[probe] Failed: ${e}`));
   });
 }
 
