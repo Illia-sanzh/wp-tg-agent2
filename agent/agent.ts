@@ -358,9 +358,9 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "abilities"],
     knowledgePatterns: [],
     skillFileSections: ["capabilities", "wpcli", "safety", "guardrails", "content_formatting", "common_skills"],
-    maxSteps: 15,
-    maxTokens: 4096,
-    maxOutputChars: 8000,
+    maxSteps: 30,
+    maxTokens: 8192,
+    maxOutputChars: 10000,
   },
   scheduling: {
     name: "scheduling",
@@ -378,19 +378,29 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "web_design", "custom_skills"],
     knowledgePatterns: ["*"],  // all .md knowledge skills (web-design, greenshift-blocks, etc.)
     skillFileSections: ["capabilities", "wpcli", "safety", "content_formatting", "web_design_workflow"],
-    maxSteps: 25,
+    maxSteps: 60,
     maxTokens: 16384,
-    maxOutputChars: 8000,
+    maxOutputChars: 12000,
+  },
+  plugin_dev: {
+    name: "plugin_dev",
+    tools: ["run_command", "read_file", "write_file", "wp_rest", "wp_cli_remote", "reply_to_forum", "fetch_page"],
+    promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode"],
+    knowledgePatterns: ["*"],
+    skillFileSections: ["capabilities", "wpcli", "safety", "guardrails"],
+    maxSteps: 80,
+    maxTokens: 16384,
+    maxOutputChars: 16000,
   },
   bug_fix: {
     name: "bug_fix",
-    tools: ["mcp_server_github__", "reply_to_forum", "read_file", "wp_rest"],
+    tools: ["mcp_server_github__", "reply_to_forum", "read_file", "wp_rest", "run_command", "write_file"],
     promptSections: ["identity", "execution_rules", "efficiency_rules", "bug_fix_workflow"],
     knowledgePatterns: [],
     skillFileSections: [],
-    maxSteps: 30,
+    maxSteps: 50,
     maxTokens: 16384,
-    maxOutputChars: 12000,
+    maxOutputChars: 16000,
   },
   general: {
     name: "general",
@@ -398,9 +408,9 @@ const TASK_PROFILES: Record<string, TaskProfile> = {
     promptSections: ["*"],
     knowledgePatterns: ["*"],
     skillFileSections: ["*"],
-    maxSteps: 25,
+    maxSteps: 60,
     maxTokens: 16384,
-    maxOutputChars: 8000,
+    maxOutputChars: 12000,
   },
 };
 
@@ -471,6 +481,7 @@ Categories:
 - wp_admin: WordPress admin tasks (plugin management, user management, settings, content CRUD, database queries, site maintenance)
 - scheduling: scheduling tasks for the future, cron jobs, reminders
 - web_design: creating or modifying web pages, HTML/CSS, designing layouts, replicating designs
+- plugin_dev: creating new WordPress plugins from scratch, building forms/features as plugins, or making significant modifications to existing plugin code (adding features, rewriting sections, changing behavior). Also use for modifying existing plugins: going back and changing something the agent wrote, fixing plugin issues, updating plugin functionality.
 - general: anything that doesn't fit above, or complex multi-domain tasks
 
 Respond with ONLY the category name, nothing else.`;
