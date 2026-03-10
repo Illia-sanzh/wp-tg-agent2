@@ -1,0 +1,14 @@
+# Example skill: Check server disk space
+# This skill works out of the box — no external API or allowlist changes needed.
+# Remove or set `disabled: true` to hide it from the agent.
+
+name: check_server_disk
+label: "Check Server Disk Space"
+description: >
+  Check how much disk space is available on the server where WordPress is running.
+  Use this when the user asks about storage, before large media uploads,
+  before installing many plugins, or when diagnosing "disk full" errors.
+  Also shows the total size of the WordPress installation directory.
+type: command
+command: "df -h / | tail -1 && echo '' && echo 'WordPress dir size:' && du -sh /wordpress 2>/dev/null || echo '(WordPress dir not accessible)'"
+parameters: []

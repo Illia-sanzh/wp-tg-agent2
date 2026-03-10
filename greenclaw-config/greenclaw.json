@@ -1,0 +1,59 @@
+{
+  "name": "WordPress Telegram Agent",
+  "version": "1.0.0",
+  "description": "AI agent for managing WordPress sites via Telegram",
+
+  "agent": {
+    "instructions_file": "/app/config/AGENTS.md",
+    "skill_file": "/app/SKILL.md",
+    "max_steps": 25,
+    "max_output_chars": 8000,
+    "timeout_seconds": 300
+  },
+
+  "llm": {
+    "provider": "litellm",
+    "base_url": "${LITELLM_BASE_URL}",
+    "model": "${DEFAULT_MODEL}",
+    "fallback_model": "${FALLBACK_MODEL}",
+    "max_tokens": 4096,
+    "temperature": 0.3
+  },
+
+  "wordpress": {
+    "path": "${WP_PATH}",
+    "url": "${WP_URL}",
+    "admin_user": "${WP_ADMIN_USER}",
+    "wpcli_flags": ["--allow-root", "--no-color"],
+    "safe_commands": true
+  },
+
+  "security": {
+    "blocked_commands": [
+      "wp db drop",
+      "wp db reset",
+      "wp site empty",
+      "wp eval",
+      "wp eval-file",
+      "wp shell",
+      "wp config delete"
+    ],
+    "require_confirmation": [
+      "wp post delete",
+      "wp plugin deactivate",
+      "wp plugin delete",
+      "wp theme delete",
+      "wp user delete",
+      "wp search-replace"
+    ],
+    "dry_run_first": [
+      "wp search-replace"
+    ]
+  },
+
+  "agent_skills": {
+    "wordpress_agent_skills_url": "https://github.com/WordPress/agent-skills",
+    "ai_building_blocks_url": "https://make.wordpress.org/ai/2025/07/17/ai-building-blocks/",
+    "wpcli_url": "https://wp-cli.org/"
+  }
+}

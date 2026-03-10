@@ -1,0 +1,26 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Logs
+install.log
+*.log
+
+# Docker
+docker/volumes/
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+.claude/
+.claude/settings.local.json

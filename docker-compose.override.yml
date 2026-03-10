@@ -1,0 +1,35 @@
+services:
+  greenclaw-agent:
+    restart: "no"
+    mem_limit: 2048m
+    environment:
+      LOG_LEVEL: debug
+    volumes:
+      - ./agent/agent.ts:/app/agent.ts:ro
+      - ./agent/src:/app/src:ro
+      - ./SKILL.md:/app/SKILL.md:ro
+    command: ["node", "--import", "tsx", "--watch", "agent.ts"]
+
+  greenclaw-bot:
+    restart: "no"
+    mem_limit: 512m
+    environment:
+      LOG_LEVEL: debug
+    volumes:
+      - ./telegram-bot/bot.ts:/app/bot.ts:ro
+      - ./telegram-bot/src:/app/src:ro
+    command: ["node", "--import", "tsx", "--watch", "bot.ts"]
+
+  greenclaw-litellm:
+    restart: "no"
+    mem_limit: 1024m
+
+  greenclaw-mcp-runner:
+    restart: "no"
+    mem_limit: 768m
+
+  greenclaw-relay:
+    restart: "no"
+
+  greenclaw-squid:
+    restart: "no"

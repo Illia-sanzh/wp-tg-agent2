@@ -1,0 +1,31 @@
+name: Deploy
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ${{ secrets.DEPLOY_PATH }}
+            git fetch --tags
+            git checkout ${{ github.ref_name }}
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+            sleep 5
+            curl -sf http://localhost:3010/health || echo "Health check failed"
+
+      - name: Notify Telegram
+        if: always()
+        uses: appleboy/telegram-action@v1
+        with:
+          to: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: "Deploy ${{ github.ref_name }}: ${{ job.status }}"

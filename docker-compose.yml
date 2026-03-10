@@ -1,0 +1,238 @@
+# WordPress Telegram Agent - Container Stack
+# Architecture: Bot → Agent → LiteLLM → Squid → Internet
+#
+# NETWORK ISOLATION MODEL (matches PDF architecture):
+#   agent-internal: internal:true → NO route to internet. Containers here
+#                   physically cannot open outbound connections to the internet.
+#   proxy-external: normal bridge with internet routing. ONLY Squid is here.
+#
+#   Squid sits in BOTH networks, acting as the sole internet gateway.
+#   HTTP_PROXY env vars ensure HTTP/HTTPS traffic uses Squid.
+#   internal:true ensures raw-socket bypass attempts are blocked at the OS level.
+
+services:
+
+  # ── Egress proxy ──────────────────────────────────────────────────────────
+  # THE ONLY CONTAINER WITH INTERNET ACCESS.
+  # Lives in agent-internal (to serve other containers) AND proxy-external
+  # (to reach the internet). Allowlist enforced by squid.conf.
+  greenclaw-squid:
+    build:
+      context: ./squid
+      dockerfile: Dockerfile
+    container_name: greenclaw-squid
+    restart: unless-stopped
+    volumes:
+      - ./squid/squid.conf:/etc/squid/squid.conf:ro
+      - ./squid/allowlist.txt:/etc/squid/allowlist.txt:ro
+      - squid-logs:/var/log/squid
+    networks:
+      agent-internal: {}   # Accessible to other containers
+      proxy-external: {}   # Can reach the internet
+    healthcheck:
+      # bash /dev/tcp check: reliable port-open test with no extra tools needed.
+      # squid -k check requires a PID file (not written in -N foreground mode).
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/3128' 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── LLM Proxy ─────────────────────────────────────────────────────────────
+  # Sits between agent and AI providers. Holds real API keys. Budget limits.
+  # internal:true means it has NO internet route — must use Squid for all
+  # outbound AI API calls.
+  greenclaw-litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: greenclaw-litellm
+    restart: unless-stopped
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    env_file: .env
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    environment:
+      # Force all AI API calls through Squid (the only internet gateway)
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-squid,greenclaw-agent,greenclaw-bot,localhost,127.0.0.1,172.28.0.0/16"
+      # CRITICAL: aiohttp ignores proxy env vars by default — this enables them
+      AIOHTTP_TRUST_ENV: "true"
+      UVICORN_WORKERS: "1"
+    mem_limit: 896m
+    networks:
+      agent-internal: {}   # No internet route (internal:true on this network)
+    depends_on:
+      greenclaw-squid:
+        condition: service_healthy
+    healthcheck:
+      # Python socket check — works regardless of which HTTP endpoints exist and
+      # does not require curl/wget (absent from the Python slim base image).
+      test: ["CMD-SHELL", "python3 -c 'import socket; s=socket.socket(); s.settimeout(3); s.connect((\"localhost\",4000)); s.close()'"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+
+  # ── WordPress AI Agent ────────────────────────────────────────────────────
+  # Receives tasks, runs agentic loop with the LLM, executes WP-CLI / REST API.
+  # internal:true means it physically cannot reach the internet directly.
+  # All outbound traffic goes through Squid via HTTP_PROXY env var.
+  # LLM calls go to LiteLLM (internal), which then proxies through Squid.
+  greenclaw-agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: greenclaw-agent
+    restart: unless-stopped
+    # NOTE: Docker port publishing doesn't work with internal:true networks on this host.
+    # WordPress reaches the agent via socat (see install.sh / systemd unit).
+    env_file: .env
+    environment:
+      # Points to LiteLLM, NOT directly to Anthropic → fixes the 401 issue
+      LITELLM_BASE_URL: "http://greenclaw-litellm:4000/v1"
+      # For any tool that downloads from the internet (plugins, images)
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-litellm,greenclaw-squid,greenclaw-bot,greenclaw-mcp-runner,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
+      PYTHONUNBUFFERED: "1"
+      SKILL_FILE: "/app/SKILL.md"
+      WP_PATH: "/wordpress"
+      # Overrides DB_HOST inside the container so WP-CLI can reach the host's MariaDB.
+      # wp-config.php reads this env var; PHP-FPM on the host doesn't have it set,
+      # so WordPress itself keeps connecting via localhost (socket). See install.sh.
+      WP_DB_HOST: "host.docker.internal"
+    extra_hosts:
+      # 172.28.0.1 is the gateway of the agent-internal bridge — the host machine's IP
+      # as seen from containers on this network. Using host-gateway would resolve to
+      # docker0 (172.17.0.1) which is unreachable from an internal:true network.
+      - "host.docker.internal:172.28.0.1"
+    volumes:
+      # WordPress files (if on same server). Remote-only mode: set WP_PATH="" in .env
+      - ${WP_PATH:-/var/www/html}:/wordpress:rw
+      - ./SKILL.md:/app/SKILL.md:ro
+      - ./greenclaw-config:/app/config:rw
+      - agent-tmp:/tmp/wp-agent
+      # Persistent data for APScheduler's SQLite job store.
+      # Scheduled tasks survive container restarts because of this volume.
+      - agent-data:/app/data
+    mem_limit: 1152m
+    networks:
+      agent-internal: {}   # No internet route
+    depends_on:
+      greenclaw-litellm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # ── MCP Runner ────────────────────────────────────────────────────────────
+  # Sandboxed Node.js container that installs and runs MCP servers on-demand.
+  # SECURITY: named volume only (no host bind mounts), cap_drop ALL, read-only
+  # root FS, all outbound through Squid. Only whitelisted npm packages allowed.
+  greenclaw-mcp-runner:
+    build:
+      context: ./mcp-runner
+      dockerfile: Dockerfile
+    container_name: greenclaw-mcp-runner
+    restart: unless-stopped
+    environment:
+      # All npm/MCP outbound traffic routed through Squid
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-agent,greenclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
+      MCP_ENV_SECRET: "${MCP_ENV_SECRET:-}"
+    volumes:
+      # Named volume only — NO host bind mount (security boundary)
+      - mcp-data:/mcps
+    mem_limit: 512m
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /root
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      agent-internal: {}
+    depends_on:
+      greenclaw-squid:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e 'fetch(\"http://localhost:9000/health\").then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))'"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Agent Relay ───────────────────────────────────────────────────────────
+  # Bridges the internal Docker network to the host. WordPress on the host
+  # calls localhost:3010, which this container forwards to greenclaw-agent:8080.
+  # Needed because internal:true networks block host→container traffic.
+  greenclaw-relay:
+    image: alpine/socat:latest
+    container_name: greenclaw-relay
+    restart: unless-stopped
+    command: TCP-LISTEN:3010,fork,reuseaddr TCP:greenclaw-agent:8080
+    ports:
+      - "127.0.0.1:3010:3010"
+    mem_limit: 32m
+    networks:
+      agent-internal: {}     # Can reach the agent
+      proxy-external: {}     # Non-internal — allows port publishing to host
+    depends_on:
+      greenclaw-agent:
+        condition: service_healthy
+
+  # ── Telegram Bot ──────────────────────────────────────────────────────────
+  # User interface. Relays Telegram messages to the agent.
+  # Telegram API (api.telegram.org) is on the Squid allowlist.
+  greenclaw-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    container_name: greenclaw-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AGENT_URL: "http://greenclaw-agent:8080"
+      # Telegram long-polling goes through Squid
+      HTTPS_PROXY: "http://greenclaw-squid:3128"
+      HTTP_PROXY: "http://greenclaw-squid:3128"
+      NO_PROXY: "greenclaw-agent,greenclaw-litellm,greenclaw-squid,localhost,127.0.0.1,172.28.0.0/16"
+    mem_limit: 256m
+    networks:
+      agent-internal: {}   # No internet route
+    depends_on:
+      greenclaw-agent:
+        condition: service_healthy
+
+volumes:
+  squid-logs:
+  agent-tmp:
+  # Scheduler SQLite database — persists scheduled jobs across restarts
+  agent-data:
+  # MCP packages and manifests — isolated named volume, not exposed to host
+  mcp-data:
+
+networks:
+  # All agent/bot containers live here. internal:true = NO internet routing.
+  # Containers can reach each other, but not the outside world directly.
+  agent-internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: "172.28.0.0/16"
+
+  # Only Squid lives here alongside agent-internal.
+  # Normal bridge = HAS internet routing.
+  # This is Squid's "outside leg" for reaching AI APIs, Telegram, etc.
+  proxy-external:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "172.29.0.0/16"

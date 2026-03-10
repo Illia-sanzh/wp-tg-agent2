@@ -1,0 +1,53 @@
+services:
+  greenclaw-agent:
+    restart: unless-stopped
+    mem_limit: 1152m
+    environment:
+      LOG_LEVEL: info
+      NODE_OPTIONS: "--max-old-space-size=1024"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  greenclaw-bot:
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      LOG_LEVEL: info
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  greenclaw-litellm:
+    restart: unless-stopped
+    mem_limit: 896m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  greenclaw-mcp-runner:
+    restart: unless-stopped
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  greenclaw-relay:
+    restart: unless-stopped
+    mem_limit: 32m
+
+  greenclaw-squid:
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

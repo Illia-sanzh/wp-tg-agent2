@@ -1,0 +1,29 @@
+{
+  "name": "greenclaw-agent",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": ["agent", "telegram-bot"],
+  "scripts": {
+    "lint": "eslint agent/agent.ts telegram-bot/bot.ts",
+    "lint:fix": "eslint --fix agent/agent.ts telegram-bot/bot.ts",
+    "format": "prettier --write \"agent/**/*.ts\" \"telegram-bot/**/*.ts\"",
+    "format:check": "prettier --check \"agent/**/*.ts\" \"telegram-bot/**/*.ts\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "husky": "^9.0.0",
+    "lint-staged": "^15.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.5.0"
+  },
+  "lint-staged": {
+    "*.ts": ["eslint --fix", "prettier --write"]
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
