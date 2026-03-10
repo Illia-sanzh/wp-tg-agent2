@@ -9,7 +9,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
-COPY mcp-runner.js ./
+COPY mcp-runner.js proxy-bootstrap.js ./
 
 # MCP packages install here (Docker named volume mounted at runtime)
 RUN mkdir -p /mcps

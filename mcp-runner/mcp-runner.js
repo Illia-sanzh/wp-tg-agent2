@@ -206,7 +206,7 @@ function introspectTools(name, pkgName, env) {
     console.log(`[mcp-runner] Introspecting ${name} via ${bin}`);
 
     const proc = spawn("node", [bin], {
-      env:   { ...process.env, ...env, PATH: process.env.PATH },
+      env:   { ...process.env, ...env, PATH: process.env.PATH, NODE_OPTIONS: "--require /app/proxy-bootstrap.js" },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -382,7 +382,7 @@ function callMcpTool(name, pkgName, env, tool, toolArgs) {
     if (!bin) return reject(new Error(`Cannot find entry point for ${pkgName}`));
 
     const proc = spawn("node", [bin], {
-      env:   { ...process.env, ...env, PATH: process.env.PATH },
+      env:   { ...process.env, ...env, PATH: process.env.PATH, NODE_OPTIONS: "--require /app/proxy-bootstrap.js" },
       stdio: ["pipe", "pipe", "pipe"],
     });
 

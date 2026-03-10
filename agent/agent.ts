@@ -502,9 +502,14 @@ Respond with ONLY the category name, nothing else.`;
 }
 
 // For inbound events, we can route deterministically without an LLM call
-function routeInboundEvent(event: string, autoRespond: boolean): TaskProfile {
+function routeInboundEvent(event: string, autoRespond: boolean, metadata?: any): TaskProfile {
   if (!autoRespond) return TASK_PROFILES.inbound_notify;
-  if (event === "new_topic" || event === "new_comment") return TASK_PROFILES.forum_reply;
+  if (event === "new_topic" || event === "new_comment") {
+    // Don't auto-reply to bug reports — they go through the bug fix pipeline
+    const topicType = (metadata?.type ?? "").toLowerCase();
+    if (topicType === "bug") return TASK_PROFILES.inbound_notify;
+    return TASK_PROFILES.forum_reply;
+  }
   // votes, priority changes, type changes — just notify
   return TASK_PROFILES.inbound_notify;
 }
@@ -2179,7 +2184,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   }
 
   // Deterministic routing — no LLM call needed for inbound events
-  const profile = routeInboundEvent(event, auto_respond);
+  const profile = routeInboundEvent(event, auto_respond, metadata);
   const threadKey = thread_id || `${channel}_${Date.now()}`;
   console.log(`[inbound] ${channel}/${event} thread=${threadKey} author=${author?.name ?? "?"} profile=${profile.name}`);
 
@@ -2199,6 +2204,8 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   if (metadata?.link)     tgLines.push(`🔗 Link: ${metadata.link}`);
   if (metadata?.post_id)  tgLines.push(`⚙️ Post ID: ${metadata.post_id}`);
   if (author?.name)       tgLines.push(`👤 Author: ${author.name}`);
+  if (metadata?.type)     tgLines.push(`🏷️ Type: ${metadata.type}`);
+  if (metadata?.priority && metadata.priority !== "regular") tgLines.push(`⚡ Priority: ${metadata.priority}`);
   if (metadata?.vote_count) tgLines.push(`🔢 Votes: ${metadata.vote_count}`);
   if (content) {
     tgLines.push("");
