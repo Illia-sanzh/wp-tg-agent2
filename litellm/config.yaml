@@ -175,17 +175,9 @@ router_settings:
   num_retries: 2
   retry_after: 5
 
-  # Automatic fallback if the default model fails
-  fallbacks:
-    - claude-sonnet-4-6: ["gpt-4o", "deepseek-chat", "gemini-2.0-flash"]
-    - gpt-4o: ["claude-sonnet-4-6", "deepseek-chat"]
-    - deepseek-chat: ["claude-sonnet-4-6", "gpt-4o"]
-    - gemini-2.0-flash: ["claude-sonnet-4-6", "gpt-4o"]
-    - openrouter/claude-sonnet-4-6: ["openrouter/gpt-4o", "openrouter/gemini-2.0-flash", "openrouter/deepseek-chat"]
-    - openrouter/claude-opus-4-6: ["openrouter/claude-sonnet-4-6", "openrouter/deepseek-chat"]
-    - openrouter/deepseek-chat: ["openrouter/claude-sonnet-4-6", "openrouter/gemini-2.0-flash"]
-    - claude-haiku: ["gpt-4o-mini", "gemini-2.0-flash"]
-    - openrouter/claude-haiku: ["openrouter/gpt-4o-mini", "openrouter/gemini-2.0-flash"]
+  # Fallbacks are handled by the agent (which probes models on startup
+  # and only calls ones with valid API keys). LiteLLM fallbacks would
+  # blindly try models with missing/expired keys, causing error cascades.
 
 litellm_settings:
   # Request timeout in seconds
