@@ -22,8 +22,14 @@ import Database from "better-sqlite3";
 import schedule from "node-schedule";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { getProxyForUrl } from "proxy-from-env";
+import pino from "pino";
 
-// ─── Configuration ────────────────────────────────────────────────────────────
+const log = pino({
+  level: process.env.LOG_LEVEL || "info",
+  ...(process.env.NODE_ENV !== "production" && {
+    transport: { target: "pino-pretty", options: { colorize: true, translateTime: "HH:MM:ss" } },
+  }),
+});
 
 const LITELLM_BASE_URL = process.env.LITELLM_BASE_URL ?? "http://greenclaw-litellm:4000/v1";
 const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY ?? "sk-1234";
@@ -76,10 +82,10 @@ function loadThreads(): void {
     if (fs.existsSync(THREADS_DB)) {
       const data = JSON.parse(fs.readFileSync(THREADS_DB, "utf8"));
       for (const [k, v] of Object.entries(data)) threadStore.set(k, v as ThreadRecord);
-      console.log(`[threads] Loaded ${threadStore.size} thread(s) from disk`);
+      log.info(`[threads] Loaded ${threadStore.size} thread(s) from disk`);
     }
   } catch (e) {
-    console.warn(`[threads] Failed to load: ${e}`);
+    log.warn(`[threads] Failed to load: ${e}`);
   }
 }
 
@@ -90,7 +96,7 @@ function saveThreads(): void {
     for (const [k, v] of threadStore) obj[k] = v;
     fs.writeFileSync(THREADS_DB, JSON.stringify(obj), "utf8");
   } catch (e) {
-    console.warn(`[threads] Failed to save: ${e}`);
+    log.warn(`[threads] Failed to save: ${e}`);
   }
 }
 
@@ -146,6 +152,9 @@ const INBOUND_SECRET = process.env.INBOUND_SECRET ?? "";
 const MAX_STEPS = 25;
 const MAX_OUTPUT_CHARS = 8000;
 const PORT = 8080;
+const startedAt = Date.now();
+let taskCount = 0;
+let lastTaskAt = 0;
 
 // ─── Ensure writable data dir ─────────────────────────────────────────────────
 
@@ -231,7 +240,7 @@ class PersistentScheduler {
   start(): void {
     const rows = this.db.prepare("SELECT * FROM scheduled_jobs").all() as StoredJob[];
     for (const row of rows) this._register(row);
-    console.log(`[scheduler] Loaded ${rows.length} job(s) from DB`);
+    log.info(`[scheduler] Loaded ${rows.length} job(s) from DB`);
   }
 
   private _register(job: StoredJob): void {
@@ -456,7 +465,7 @@ async function probeModels(): Promise<void> {
   // Deduplicate
   const unique = [...new Set(candidates)];
 
-  console.log(`[probe] Testing ${unique.length} model(s): ${unique.join(", ")}`);
+  log.info(`[probe] Testing ${unique.length} model(s): ${unique.join(", ")}`);
 
   await Promise.allSettled(
     unique.map(async (m) => {
@@ -467,21 +476,21 @@ async function probeModels(): Promise<void> {
           max_tokens: 1,
         });
         _availableModels.add(m);
-        console.log(`[probe] ✓ ${m}`);
+        log.info(`[probe] ✓ ${m}`);
       } catch (e: any) {
         const msg = String(e?.message ?? e).slice(0, 120);
         // Timeout or rate-limit might be transient — give benefit of the doubt
         if (msg.includes("timeout") || msg.includes("429")) {
           _availableModels.add(m);
-          console.log(`[probe] ~ ${m} (transient: ${msg})`);
+          log.info(`[probe] ~ ${m} (transient: ${msg})`);
         } else {
-          console.log(`[probe] ✗ ${m} (${msg})`);
+          log.info(`[probe] ✗ ${m} (${msg})`);
         }
       }
     }),
   );
 
-  console.log(`[probe] Available models: ${[..._availableModels].join(", ") || "(none)"}`);
+  log.info(`[probe] Available models: ${[..._availableModels].join(", ") || "(none)"}`);
 }
 
 /** Pick best available model from a preference list */
@@ -530,13 +539,13 @@ Respond with ONLY the category name, nothing else.`;
       .toLowerCase()
       .replace(/[^a-z_]/g, "");
     if (TASK_PROFILES[category]) {
-      console.log(`[router] Classified as: ${category} (via ${routerModel})`);
+      log.info(`[router] Classified as: ${category} (via ${routerModel})`);
       return TASK_PROFILES[category];
     }
-    console.log(`[router] Unknown category "${category}", using general`);
+    log.info(`[router] Unknown category "${category}", using general`);
     return DEFAULT_PROFILE;
   } catch (e) {
-    console.warn(`[router] Router call failed (${e}), using general profile`);
+    log.warn(`[router] Router call failed (${e}), using general profile`);
     return DEFAULT_PROFILE;
   }
 }
@@ -604,7 +613,7 @@ const SKILL_FILE_SECTIONS: Record<string, string> = {};
   if (currentLines.length > 0) {
     SKILL_FILE_SECTIONS[currentKey] = currentLines.join("\n").trim();
   }
-  console.log(
+  log.info(
     `[skill-file] Split into ${Object.keys(SKILL_FILE_SECTIONS).length} sections: ${Object.keys(SKILL_FILE_SECTIONS).join(", ")}`,
   );
 }
@@ -833,11 +842,11 @@ async function summarizeHistory(
     });
     const summary = summaryResp.choices?.[0]?.message?.content ?? "";
     if (summary) {
-      console.log(`[threads] Summarized ${toSummarize.length} messages → ${summary.length} chars`);
+      log.info(`[threads] Summarized ${toSummarize.length} messages → ${summary.length} chars`);
       return [{ role: "system", content: `Previous conversation summary: ${summary}` }, ...toKeep];
     }
   } catch (e) {
-    console.warn(`[threads] Summary failed (${e}), using truncated history`);
+    log.warn(`[threads] Summary failed (${e}), using truncated history`);
   }
 
   // Fallback: just keep the last few messages
@@ -1048,7 +1057,7 @@ function loadCustomSkills(): OpenAI.Chat.ChatCompletionTool[] {
 
       const name = (skill.name ?? "").trim();
       if (!name || !/^[a-zA-Z0-9_]+$/.test(name)) {
-        console.warn(`[skills] ${file}: invalid/missing name, skipping.`);
+        log.warn(`[skills] ${file}: invalid/missing name, skipping.`);
         continue;
       }
 
@@ -1069,9 +1078,9 @@ function loadCustomSkills(): OpenAI.Chat.ChatCompletionTool[] {
           parameters: { type: "object", properties: props, required },
         },
       });
-      console.log(`[skills] Loaded skill_${name} (${file})`);
+      log.info(`[skills] Loaded skill_${name} (${file})`);
     } catch (e) {
-      console.warn(`[skills] Failed to load ${file}: ${e}`);
+      log.warn(`[skills] Failed to load ${file}: ${e}`);
     }
   }
   return tools;
@@ -1101,7 +1110,7 @@ function loadMarkdownSkillList(): MarkdownSkill[] {
         const content = fs.readFileSync(path.join(SKILLS_DIR, file), "utf8").trim();
         if (content) skills.push({ name: file.replace(/\.md$/, ""), filename: file, content });
       } catch (e) {
-        console.warn(`[skills] Failed to load markdown ${file}: ${e}`);
+        log.warn(`[skills] Failed to load markdown ${file}: ${e}`);
       }
     }
   } catch {}
@@ -1156,10 +1165,10 @@ async function loadMcpTools(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
         });
       }
     }
-    if (tools.length > 0) console.log(`[mcp] Loaded ${tools.length} tool(s) from ${mcps.length} MCP(s)`);
+    if (tools.length > 0) log.info(`[mcp] Loaded ${tools.length} tool(s) from ${mcps.length} MCP(s)`);
     return tools;
   } catch (e) {
-    console.warn(`[mcp] Runner unreachable, skipping MCP tools: ${e}`);
+    log.warn(`[mcp] Runner unreachable, skipping MCP tools: ${e}`);
     return [];
   }
 }
@@ -1229,7 +1238,7 @@ async function wpMcpCall(
 
 async function loadWpAbilities(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
   if (!WP_MCP_ENDPOINT || !WP_APP_PASSWORD) {
-    console.warn("[wp-abilities] Skipped: WP_URL or WP_APP_PASSWORD not set");
+    log.warn("[wp-abilities] Skipped: WP_URL or WP_APP_PASSWORD not set");
     return [];
   }
 
@@ -1244,7 +1253,7 @@ async function loadWpAbilities(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
       [];
 
     if (abilities.length === 0) {
-      console.log("[wp-abilities] No abilities discovered");
+      log.info("[wp-abilities] No abilities discovered");
       return [];
     }
 
@@ -1280,10 +1289,10 @@ async function loadWpAbilities(): Promise<OpenAI.Chat.ChatCompletionTool[]> {
       });
     }
 
-    console.log(`[wp-abilities] Loaded ${tools.length} tool(s): ${abilities.map((a) => a.name).join(", ")}`);
+    log.info(`[wp-abilities] Loaded ${tools.length} tool(s): ${abilities.map((a) => a.name).join(", ")}`);
     return tools;
   } catch (e: any) {
-    console.warn(`[wp-abilities] Failed to load: ${e.message}`);
+    log.warn(`[wp-abilities] Failed to load: ${e.message}`);
     return [];
   }
 }
@@ -1326,7 +1335,7 @@ async function runSingleShot(
     return { text, elapsed: (Date.now() - start) / 1000, model };
   } catch (e: any) {
     if (model !== fallback) {
-      console.warn(`[single-shot] ${model} failed, trying ${fallback}`);
+      log.warn(`[single-shot] ${model} failed, trying ${fallback}`);
       try {
         const resp = await client.chat.completions.create({
           model: fallback,
@@ -1875,7 +1884,7 @@ function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
 
 async function notifyTelegram(text: string, recipientIds?: string[], replyMarkup?: any): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN) {
-    console.warn("[notify] Telegram notify skipped: BOT_TOKEN not set");
+    log.warn("[notify] Telegram notify skipped: BOT_TOKEN not set");
     return;
   }
   // Use provided recipient IDs if non-empty, otherwise fall back to global admin list.
@@ -1887,7 +1896,7 @@ async function notifyTelegram(text: string, recipientIds?: string[], replyMarkup
           .map((s) => s.trim())
           .filter(Boolean);
   if (ids.length === 0) {
-    console.warn("[notify] Telegram notify skipped: no recipient IDs");
+    log.warn("[notify] Telegram notify skipped: no recipient IDs");
     return;
   }
   const truncated = text.length > 4000 ? text.slice(0, 4000) + "\n…[truncated]" : text;
@@ -1910,13 +1919,28 @@ async function notifyTelegram(text: string, recipientIds?: string[], replyMarkup
         }),
       );
     } catch (e) {
-      console.warn(`[notify] Telegram notify failed for user ${uid}: ${e}`);
+      log.warn(`[notify] Telegram notify failed for user ${uid}: ${e}`);
     }
   }
 }
 
+async function notifyError(context: string, error: unknown): Promise<void> {
+  const msg = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack?.slice(0, 500) : "";
+  log.error({ err: error, context }, "notifyError");
+  await notifyTelegram(`⚠️ *Error* in \`${context}\`\n\`\`\`\n${msg}\n${stack}\n\`\`\``).catch(() => {});
+}
+
+process.on("unhandledRejection", (reason) => {
+  notifyError("unhandledRejection", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  notifyError("uncaughtException", err).finally(() => process.exit(1));
+});
+
 async function executeScheduledTask(taskLabel: string, taskText: string): Promise<void> {
-  console.log(`[scheduler] Running: ${taskLabel}`);
+  log.info(`[scheduler] Running: ${taskLabel}`);
   let resultText = "(no result)";
   let elapsed = 0;
   try {
@@ -1928,9 +1952,9 @@ async function executeScheduledTask(taskLabel: string, taskText: string): Promis
     }
   } catch (e) {
     resultText = `❌ Scheduled task error: ${e}`;
-    console.error(`[scheduler] Error in '${taskLabel}': ${e}`);
+    log.error({ err: e, task: taskLabel }, "scheduled task error");
   }
-  console.log(`[scheduler] Done: ${taskLabel} in ${elapsed}s`);
+  log.info(`[scheduler] Done: ${taskLabel} in ${elapsed}s`);
   await notifyTelegram(`⏰ *Scheduled task complete:* _${taskLabel}_\n\n${resultText}`);
 }
 
@@ -1985,7 +2009,7 @@ async function* runAgent(
       "openrouter/gpt-4o-mini",
     ];
     if (cheapModels.includes(model)) {
-      console.log(`[agent] Upgrading model from ${model} → ${DEFAULT_MODEL} for agentic profile '${profile.name}'`);
+      log.info(`[agent] Upgrading model from ${model} → ${DEFAULT_MODEL} for agentic profile '${profile.name}'`);
       model = DEFAULT_MODEL;
     }
   }
@@ -2004,7 +2028,7 @@ async function* runAgent(
   // Pick a fallback from the same provider family
   const fallback = model.startsWith("openrouter/") ? OR_FALLBACK_MODEL : FALLBACK_MODEL;
 
-  console.log(
+  log.info(
     `[agent] Profile: ${profile.name} | tools: ${profileTools.length} | maxSteps: ${maxSteps} | maxTokens: ${maxTokens}`,
   );
 
@@ -2039,7 +2063,7 @@ async function* runAgent(
         } catch (e2: any) {
           const err2 = String(e2.message ?? e2);
           if (model !== fallback) {
-            console.warn(`[agent] Model ${model} failed (${err2}), trying ${fallback}`);
+            log.warn(`[agent] Model ${model} failed (${err2}), trying ${fallback}`);
             yield* runAgent(userMessage, fallback, history, profile);
             return;
           }
@@ -2049,7 +2073,7 @@ async function* runAgent(
       } else {
         const err = String(firstErr.message ?? firstErr);
         if (model !== fallback) {
-          console.warn(`[agent] Model ${model} failed (${err}), trying ${fallback}`);
+          log.warn(`[agent] Model ${model} failed (${err}), trying ${fallback}`);
           yield* runAgent(userMessage, fallback, history, profile);
           return;
         }
@@ -2069,13 +2093,13 @@ async function* runAgent(
     }
 
     const choice = response.choices[0];
-    console.log(
+    log.info(
       `[agent] Step ${steps}/${maxSteps}: finish_reason=${choice.finish_reason}, tool_calls=${choice.message?.tool_calls?.length ?? 0}, content_len=${choice.message?.content?.length ?? 0}`,
     );
 
     // Detect output truncation — response was cut off mid-generation
     if (choice.finish_reason === "length") {
-      console.warn(`[agent] Response truncated (finish_reason=length) at step ${steps}`);
+      log.warn(`[agent] Response truncated (finish_reason=length) at step ${steps}`);
       messages.push({
         role: "system",
         content:
@@ -2104,28 +2128,26 @@ async function* runAgent(
       try {
         fnArgs = JSON.parse(rawArgs || "{}");
       } catch (parseErr) {
-        console.warn(`[agent] Failed to parse tool args for ${fnName}: ${String(parseErr).slice(0, 100)}`);
-        console.warn(`[agent] Raw args (first 200 chars): ${rawArgs.slice(0, 200)}`);
+        log.warn(`[agent] Failed to parse tool args for ${fnName}: ${String(parseErr).slice(0, 100)}`);
+        log.warn(`[agent] Raw args (first 200 chars): ${rawArgs.slice(0, 200)}`);
       }
       if (fnName === "run_command" && !fnArgs.command) {
-        console.warn(
-          `[agent] Empty command! Raw args length: ${rawArgs.length}, starts with: ${rawArgs.slice(0, 200)}`,
-        );
-        console.warn(`[agent] Assistant content: ${(msg.content ?? "(none)").slice(0, 500)}`);
-        console.warn(
+        log.warn(`[agent] Empty command! Raw args length: ${rawArgs.length}, starts with: ${rawArgs.slice(0, 200)}`);
+        log.warn(`[agent] Assistant content: ${(msg.content ?? "(none)").slice(0, 500)}`);
+        log.warn(
           `[agent] All tool_calls: ${JSON.stringify(msg.tool_calls?.map((t) => ({ name: t.function.name, argsLen: t.function.arguments?.length ?? 0 })))}`,
         );
       }
 
       yield { type: "progress", text: toolLabel(fnName, fnArgs) };
 
-      console.log(`[agent] Tool call: ${fnName}(${Object.keys(fnArgs).join(", ")})`);
+      log.info(`[agent] Tool call: ${fnName}(${Object.keys(fnArgs).join(", ")})`);
       let toolResult = await dispatchTool(fnName, fnArgs);
       // Truncate to profile's output limit
       if (toolResult.length > maxOutput) {
         toolResult = toolResult.slice(0, maxOutput) + `\n... [truncated, ${toolResult.length} total chars]`;
       }
-      console.log(`[agent]   → ${String(toolResult).slice(0, 200)}`);
+      log.info(`[agent]   → ${String(toolResult).slice(0, 200)}`);
 
       messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult } as any);
 
@@ -2149,7 +2171,7 @@ async function* runAgent(
     // Consecutive error detection — bail if 4+ steps in a row all errored
     consecutiveErrors = stepHadError ? consecutiveErrors + 1 : 0;
     if (consecutiveErrors >= 4) {
-      console.warn(`[agent] Bailing: ${consecutiveErrors} consecutive error steps`);
+      log.warn(`[agent] Bailing: ${consecutiveErrors} consecutive error steps`);
       const errorDetail = recentErrors.length
         ? "\n\nErrors encountered:\n" + recentErrors.map((e, i) => `${i + 1}. ${e}`).join("\n")
         : "";
@@ -2165,7 +2187,7 @@ async function* runAgent(
     // Repeated tool call detection — bail if same exact call 3+ times
     if (repeatCount >= 3) {
       const repeatedAction = lastToolSig.split(":")[0] || "unknown";
-      console.warn(`[agent] Bailing: same tool call repeated ${repeatCount + 1} times (${repeatedAction})`);
+      log.warn(`[agent] Bailing: same tool call repeated ${repeatCount + 1} times (${repeatedAction})`);
       yield {
         type: "result",
         text: `I got stuck in a loop — repeated the same "${repeatedAction}" call ${repeatCount + 1} times. Could you rephrase what you'd like me to do?`,
@@ -2200,8 +2222,18 @@ expressApp.use(express.json({ limit: "1mb" }));
 const upload = multer({ storage: multer.memoryStorage() });
 
 expressApp.get("/health", (_req, res) => {
+  const mem = process.memoryUsage();
   res.json({
     status: "ok",
+    version: "1.0.0",
+    uptime: Math.floor((Date.now() - startedAt) / 1000),
+    taskCount,
+    lastTaskAt: lastTaskAt ? new Date(lastTaskAt).toISOString() : null,
+    memory: {
+      rss: Math.round(mem.rss / 1024 / 1024),
+      heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+      heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+    },
     model: DEFAULT_MODEL,
     router_model: ROUTER_MODEL,
     available_models: [..._availableModels],
@@ -2256,10 +2288,10 @@ expressApp.post("/transcribe", upload.single("file"), async (req: Request, res: 
       model: "whisper-1",
       file: await toFile(audioBuffer, filename, { type: contentType }),
     });
-    console.log(`[transcribe] ${audioBuffer.length}B → ${transcript.text.slice(0, 80)}`);
+    log.info(`[transcribe] ${audioBuffer.length}B → ${transcript.text.slice(0, 80)}`);
     res.json({ text: transcript.text });
   } catch (e) {
-    console.error(`[transcribe] Whisper failed: ${e}`);
+    log.error({ err: e }, "whisper transcription failed");
     res.status(502).json({ error: `Transcription failed: ${e}` });
   }
 });
@@ -2274,13 +2306,15 @@ expressApp.post("/task", async (req: Request, res: Response) => {
   }
 
   const msg = String(message).trim();
-  console.log(`[agent] Task received: ${msg.slice(0, 100)}`);
+  taskCount++;
+  lastTaskAt = Date.now();
+  log.info({ msg: msg.slice(0, 100) }, "task received");
 
   // Route to the right profile: explicit profile > router > general
   let profile: TaskProfile;
   if (profileName && TASK_PROFILES[profileName]) {
     profile = TASK_PROFILES[profileName];
-    console.log(`[agent] Using explicit profile: ${profileName}`);
+    log.info(`[agent] Using explicit profile: ${profileName}`);
   } else {
     profile = await routeTask(msg);
   }
@@ -2291,10 +2325,10 @@ expressApp.post("/task", async (req: Request, res: Response) => {
   try {
     for await (const event of runAgent(msg, model, trimmedHistory, profile)) {
       res.write(JSON.stringify(event) + "\n");
-      if (event.type === "result") console.log(`[agent] Task done in ${event.elapsed}s (profile: ${profile.name})`);
+      if (event.type === "result") log.info({ elapsed: event.elapsed, profile: profile.name }, "task complete");
     }
   } catch (e) {
-    console.error("[agent] Unhandled exception in streaming generator:", e);
+    log.error({ err: e }, "unhandled exception in streaming generator");
     res.write(JSON.stringify({ type: "result", text: `❌ Internal agent error: ${e}`, elapsed: 0, model }) + "\n");
   }
   res.end();
@@ -2345,7 +2379,7 @@ expressApp.post("/bugfix/:postId", async (req: Request, res: Response) => {
   );
 
   const userMessage = contextParts.join("\n");
-  console.log(`[bugfix] Starting fix for bug #${postId}: ${bug.title}`);
+  log.info(`[bugfix] Starting fix for bug #${postId}: ${bug.title}`);
 
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Transfer-Encoding", "chunked");
@@ -2354,7 +2388,7 @@ expressApp.post("/bugfix/:postId", async (req: Request, res: Response) => {
     for await (const event of runAgent(userMessage, model, [], profile)) {
       res.write(JSON.stringify(event) + "\n");
       if (event.type === "result") {
-        console.log(`[bugfix] Bug #${postId} done in ${event.elapsed}s`);
+        log.info(`[bugfix] Bug #${postId} done in ${event.elapsed}s`);
         // Notify Telegram with the result
         const respLines = [`🐛 Bug Fix Complete`, "", `📝 Bug: ${bug.title}`];
         if (bug.metadata?.link) respLines.push(`🔗 Forum: ${bug.metadata.link}`);
@@ -2368,7 +2402,7 @@ expressApp.post("/bugfix/:postId", async (req: Request, res: Response) => {
       }
     }
   } catch (e) {
-    console.error(`[bugfix] Error for bug #${postId}:`, e);
+    log.error({ err: e, postId }, "bugfix error");
     res.write(JSON.stringify({ type: "result", text: `❌ Bug fix error: ${e}`, elapsed: 0, model }) + "\n");
   }
   res.end();
@@ -2413,7 +2447,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   const authorEmail = (author?.email ?? "").toLowerCase();
   const authorName = (author?.name ?? "").toLowerCase();
   if (authorEmail === "ai@assistant.local" || authorName === "ai assistant") {
-    console.log(`[inbound] Skipping self-authored event (author: ${author?.name}, email: ${author?.email})`);
+    log.info(`[inbound] Skipping self-authored event (author: ${author?.name}, email: ${author?.email})`);
     res.json({ status: "skipped", reason: "self-authored" });
     return;
   }
@@ -2421,9 +2455,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
   // Deterministic routing — no LLM call needed for inbound events
   const profile = routeInboundEvent(event, auto_respond, metadata);
   const threadKey = thread_id || `${channel}_${Date.now()}`;
-  console.log(
-    `[inbound] ${channel}/${event} thread=${threadKey} author=${author?.name ?? "?"} profile=${profile.name}`,
-  );
+  log.info(`[inbound] ${channel}/${event} thread=${threadKey} author=${author?.name ?? "?"} profile=${profile.name}`);
 
   // Build CRM notification (always sent, regardless of profile)
   const eventLabels: Record<string, string> = {
@@ -2456,7 +2488,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
     const postId = String(metadata.post_id);
     pendingBugs.set(postId, { title, content, author, metadata, timestamp: Date.now() });
     cleanExpiredBugs();
-    console.log(`[inbound] Stored pending bug #${postId} (${pendingBugs.size} total)`);
+    log.info(`[inbound] Stored pending bug #${postId} (${pendingBugs.size} total)`);
 
     // Check if GitHub MCP is available for the button
     const hasGithubMcp = cachedMcpTools.some((t) => t.function.name.startsWith("mcp_server_github__"));
@@ -2506,7 +2538,7 @@ expressApp.post("/inbound", async (req: Request, res: Response) => {
 
   // ── Single-shot profile: one LLM call, then directly post reply ────────
   if (profile.singleShot) {
-    console.log(`[inbound] Single-shot mode (${profile.name})`);
+    log.info(`[inbound] Single-shot mode (${profile.name})`);
 
     // Build a focused prompt — no tool instructions needed
     const singleShotPrompt = `You are a helpful AI assistant on a WordPress forum. Reply to the following forum message.
@@ -2535,10 +2567,10 @@ Your entire response will be posted as a comment on the forum topic.`;
       // Directly post the reply — no tool call overhead
       if (resultText && resultText !== "(no response)" && metadata?.post_id) {
         const postResult = await replyToForum(Number(metadata.post_id), resultText);
-        console.log(`[inbound] Direct reply result: ${postResult}`);
+        log.info(`[inbound] Direct reply result: ${postResult}`);
       }
     } catch (e: any) {
-      console.error(`[inbound] Single-shot error: ${e}`);
+      log.error({ err: e }, "inbound single-shot error");
       resultText = `Error generating reply: ${e.message ?? e}`;
     }
   } else {
@@ -2557,13 +2589,13 @@ Your entire response will be posted as a comment on the forum topic.`;
       }
     } catch (e) {
       resultText = `Agent error: ${e}`;
-      console.error(`[inbound] Agent error: ${e}`);
+      log.error({ err: e }, "inbound agent error");
     }
   }
 
   // Save agent response to thread
   appendToThread(channel, threadKey, "assistant", resultText);
-  console.log(`[inbound] Response for ${channel}/${threadKey} in ${elapsed}s (profile: ${profile.name})`);
+  log.info(`[inbound] Response for ${channel}/${threadKey} in ${elapsed}s (profile: ${profile.name})`);
 
   // Notify Telegram of the agent's response
   if (resultText && resultText !== "(no response)") {
@@ -2754,7 +2786,7 @@ expressApp.post("/skills", (req, res) => {
     fs.writeFileSync(filePath, mdContent);
     cachedMarkdownSkillList = loadMarkdownSkillList();
     cachedMarkdownSkills = getMarkdownSkills(["*"]);
-    console.log(`[skills] Markdown skill created/updated: ${mdName}`);
+    log.info(`[skills] Markdown skill created/updated: ${mdName}`);
     res.json({ status: "created", name: mdName, type: "markdown", file: `${mdName}.md` });
     return;
   }
@@ -2790,7 +2822,7 @@ expressApp.post("/skills", (req, res) => {
     });
     fs.writeFileSync(path.join(SKILLS_DIR, `${scriptName}.yaml`), companionYaml);
     cachedCustomTools = loadCustomSkills();
-    console.log(`[skills] Script skill created: ${scriptName} (js + yaml wrapper)`);
+    log.info(`[skills] Script skill created: ${scriptName} (js + yaml wrapper)`);
     res.json({
       status: "created",
       name: scriptName,
@@ -2818,7 +2850,7 @@ expressApp.post("/skills", (req, res) => {
   fs.mkdirSync(SKILLS_DIR, { recursive: true });
   fs.writeFileSync(path.join(SKILLS_DIR, `${name}.yaml`), raw);
   cachedCustomTools = loadCustomSkills();
-  console.log(`[skills] Created/updated: ${name}`);
+  log.info(`[skills] Created/updated: ${name}`);
   res.json({ status: "created", name, tool_name: `skill_${name}`, file: `${name}.yaml` });
 });
 
@@ -2841,7 +2873,7 @@ expressApp.delete("/skills/:name", (req, res) => {
       const companion = path.join(SKILLS_DIR, `${name}.yaml`);
       if (fs.existsSync(companion)) fs.unlinkSync(companion);
       cachedCustomTools = loadCustomSkills();
-      console.log(`[skills] Script skill deleted: ${name}`);
+      log.info(`[skills] Script skill deleted: ${name}`);
       res.json({ status: "deleted", name });
       return;
     }
@@ -2852,7 +2884,7 @@ expressApp.delete("/skills/:name", (req, res) => {
       fs.unlinkSync(mdPath);
       cachedMarkdownSkillList = loadMarkdownSkillList();
       cachedMarkdownSkills = getMarkdownSkills(["*"]);
-      console.log(`[skills] Markdown skill deleted: ${name}`);
+      log.info(`[skills] Markdown skill deleted: ${name}`);
       res.json({ status: "deleted", name });
       return;
     }
@@ -2872,7 +2904,7 @@ expressApp.delete("/skills/:name", (req, res) => {
     }
     fs.unlinkSync(path.join(SKILLS_DIR, found));
     cachedCustomTools = loadCustomSkills();
-    console.log(`[skills] Deleted: ${name}`);
+    log.info(`[skills] Deleted: ${name}`);
     res.json({ status: "deleted", name });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -2939,34 +2971,40 @@ expressApp.post("/reload-wp-abilities", async (_req, res) => {
   });
 });
 
+// Express error middleware (must be after all routes)
+expressApp.use((err: any, _req: any, res: any, _next: any) => {
+  notifyError("express", err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   loadThreads();
 
   cachedCustomTools = loadCustomSkills();
-  console.log(`[agent] Custom skills loaded: ${cachedCustomTools.length}`);
+  log.info(`[agent] Custom skills loaded: ${cachedCustomTools.length}`);
 
   cachedMarkdownSkillList = loadMarkdownSkillList();
   cachedMarkdownSkills = getMarkdownSkills(["*"]); // legacy compat
-  console.log(
+  log.info(
     `[agent] Markdown knowledge loaded: ${cachedMarkdownSkillList.length} skill(s), ${cachedMarkdownSkills.length} chars total`,
   );
 
   cachedMcpTools = await loadMcpTools();
-  console.log(`[agent] MCP tools loaded: ${cachedMcpTools.length}`);
+  log.info(`[agent] MCP tools loaded: ${cachedMcpTools.length}`);
 
   cachedWpAbilityTools = await loadWpAbilities();
-  console.log(`[agent] WP Ability tools loaded: ${cachedWpAbilityTools.length}`);
+  log.info(`[agent] WP Ability tools loaded: ${cachedWpAbilityTools.length}`);
 
   scheduler.start();
-  console.log(`[scheduler] Started — pending jobs: ${scheduler.jobCount}`);
+  log.info(`[scheduler] Started — pending jobs: ${scheduler.jobCount}`);
 
   expressApp.listen(PORT, "0.0.0.0", () => {
-    console.log(`[agent] Listening on port ${PORT}`);
+    log.info(`[agent] Listening on port ${PORT}`);
     // Probe models in background (don't block startup / healthcheck)
-    probeModels().catch((e) => console.warn(`[probe] Failed: ${e}`));
+    probeModels().catch((e) => log.warn(`[probe] Failed: ${e}`));
   });
 }
 
-main().catch(console.error);
+main().catch((e) => log.error(e, "fatal startup error"));
