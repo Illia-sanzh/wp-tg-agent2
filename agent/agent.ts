@@ -460,9 +460,21 @@ async function probeModels(): Promise<void> {
   if (_modelsProbed) return;
   _modelsProbed = true;
 
-  // Models we actually use in the agent (no need to probe every LiteLLM model)
-  const candidates = [ROUTER_MODEL, DEFAULT_MODEL, FALLBACK_MODEL, OR_FALLBACK_MODEL].filter(Boolean);
-  // Deduplicate
+  // Probe all models the agent might use (primary, fallback, and cheap/router models)
+  const candidates = [
+    ROUTER_MODEL,
+    DEFAULT_MODEL,
+    FALLBACK_MODEL,
+    OR_FALLBACK_MODEL,
+    "claude-haiku",
+    "openrouter/claude-haiku",
+    "gpt-4o-mini",
+    "openrouter/gpt-4o-mini",
+    "gemini-2.0-flash",
+    "openrouter/gemini-2.0-flash",
+    "deepseek-chat",
+    "openrouter/deepseek-chat",
+  ].filter(Boolean);
   const unique = [...new Set(candidates)];
 
   log.info(`[probe] Testing ${unique.length} model(s): ${unique.join(", ")}`);
@@ -1322,7 +1334,14 @@ async function runSingleShot(
     { role: "user", content: userMessage },
   ];
 
-  const fallback = model.startsWith("openrouter/") ? OR_FALLBACK_MODEL : FALLBACK_MODEL;
+  const fallback = model.startsWith("openrouter/")
+    ? pickAvailableModel(
+        OR_FALLBACK_MODEL,
+        "openrouter/gemini-2.0-flash",
+        "openrouter/deepseek-chat",
+        "openrouter/claude-haiku",
+      )
+    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat", "claude-haiku");
 
   try {
     const resp = await client.chat.completions.create({
@@ -1334,7 +1353,7 @@ async function runSingleShot(
     const text = resp.choices?.[0]?.message?.content ?? "(no response)";
     return { text, elapsed: (Date.now() - start) / 1000, model };
   } catch (e: any) {
-    if (model !== fallback) {
+    if (model !== fallback && _availableModels.has(fallback)) {
       log.warn(`[single-shot] ${model} failed, trying ${fallback}`);
       try {
         const resp = await client.chat.completions.create({
@@ -2025,8 +2044,15 @@ async function* runAgent(
   const maxSteps = profile.maxSteps || MAX_STEPS;
   const maxTokens = profile.maxTokens || 16384;
   const maxOutput = profile.maxOutputChars || MAX_OUTPUT_CHARS;
-  // Pick a fallback from the same provider family
-  const fallback = model.startsWith("openrouter/") ? OR_FALLBACK_MODEL : FALLBACK_MODEL;
+  // Pick a fallback from the same provider family, only from probed-available models
+  const fallback = model.startsWith("openrouter/")
+    ? pickAvailableModel(
+        OR_FALLBACK_MODEL,
+        "openrouter/gemini-2.0-flash",
+        "openrouter/deepseek-chat",
+        "openrouter/claude-haiku",
+      )
+    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat", "claude-haiku");
 
   log.info(
     `[agent] Profile: ${profile.name} | tools: ${profileTools.length} | maxSteps: ${maxSteps} | maxTokens: ${maxTokens}`,
@@ -2062,7 +2088,7 @@ async function* runAgent(
           } as any);
         } catch (e2: any) {
           const err2 = String(e2.message ?? e2);
-          if (model !== fallback) {
+          if (model !== fallback && _availableModels.has(fallback)) {
             log.warn(`[agent] Model ${model} failed (${err2}), trying ${fallback}`);
             yield* runAgent(userMessage, fallback, history, profile);
             return;
@@ -2072,7 +2098,7 @@ async function* runAgent(
         }
       } else {
         const err = String(firstErr.message ?? firstErr);
-        if (model !== fallback) {
+        if (model !== fallback && _availableModels.has(fallback)) {
           log.warn(`[agent] Model ${model} failed (${err}), trying ${fallback}`);
           yield* runAgent(userMessage, fallback, history, profile);
           return;
