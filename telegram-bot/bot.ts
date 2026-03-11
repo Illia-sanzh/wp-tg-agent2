@@ -4,6 +4,14 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import axios from "axios";
 import FormData from "form-data";
 import * as yaml from "js-yaml";
+import pino from "pino";
+
+const log = pino({
+  level: process.env.LOG_LEVEL || "info",
+  ...(process.env.NODE_ENV !== "production" && {
+    transport: { target: "pino-pretty", options: { colorize: true, translateTime: "HH:MM:ss" } },
+  }),
+});
 
 const HTTPS_PROXY = process.env.HTTPS_PROXY ?? "";
 
@@ -928,7 +936,7 @@ bot.use(
 );
 bot.use(session({ initial: (): SessionData => ({}) }));
 bot.catch((err) => {
-  console.error("[bot] Unhandled error:", err.message ?? err);
+  log.error({ err }, "unhandled bot error");
 });
 bot.command("start", async (ctx) => {
   if (!isAdmin(ctx)) {
@@ -1380,7 +1388,7 @@ bot.command(["skill", "skills"], async (ctx) => {
   const rawMatch = ctx.match ?? "";
   const args = rawMatch.trim().split(/\s+/).filter(Boolean);
   const sub = (args[0] ?? "").toLowerCase();
-  console.log(`[bot] /skill command: match="${rawMatch}" sub="${sub}" args=${JSON.stringify(args)}`);
+  log.info(`[bot] /skill command: match="${rawMatch}" sub="${sub}" args=${JSON.stringify(args)}`);
 
   if (sub === "reload") {
     try {
@@ -1455,7 +1463,7 @@ bot.command(["skill", "skills"], async (ctx) => {
   }
 
   if (sub === "create") {
-    console.log("[bot] /skill create: entering create flow");
+    log.info("[bot] /skill create: entering create flow");
     ctx.session.skillDraft = {};
     ctx.session.skillStep = "name";
     await ctx.reply(
@@ -1464,7 +1472,7 @@ bot.command(["skill", "skills"], async (ctx) => {
         "Alphanumeric + underscores only, e.g. check_ssl\n\n" +
         "Type /cancel at any time to abort.",
     );
-    console.log("[bot] /skill create: reply sent successfully");
+    log.info("[bot] /skill create: reply sent successfully");
     return;
   }
 
@@ -1497,7 +1505,7 @@ async function handleSkillCreateStep(ctx: MyContext): Promise<boolean> {
   const draft = ctx.session.skillDraft ?? {};
   const text = ctx.message?.text?.trim() ?? "";
   if (!step) return false;
-  console.log(`[bot] handleSkillCreateStep: step="${step}" text="${text.slice(0, 50)}"`);
+  log.info(`[bot] handleSkillCreateStep: step="${step}" text="${text.slice(0, 50)}"`);
 
   if (step === "name") {
     if (!/^[a-zA-Z0-9_]+$/.test(text)) {
@@ -2067,7 +2075,7 @@ async function runAgentTask(ctx: MyContext, taskText: string): Promise<void> {
       try {
         await ctx.reply(text);
       } catch (e2) {
-        console.error(`Failed to send chunk: ${e2}`);
+        log.error(`Failed to send chunk: ${e2}`);
       }
     }
   }
@@ -2196,7 +2204,7 @@ bot.on("callback_query:data", async (ctx) => {
       try {
         await ctx.reply(text);
       } catch (e2) {
-        console.error(`Failed to send bug fix result: ${e2}`);
+        log.error(`Failed to send bug fix result: ${e2}`);
       }
     }
   }
@@ -2441,12 +2449,12 @@ async function main(): Promise<void> {
     { command: "mcp", description: "Install, list, remove MCP tool servers" },
   ]);
 
-  console.log(`[bot] Starting (admin users: ${[...ADMIN_USER_IDS].join(", ")})`);
-  console.log("[bot] Bot commands registered with Telegram.");
+  log.info(`[bot] Starting (admin users: ${[...ADMIN_USER_IDS].join(", ")})`);
+  log.info("[bot] Bot commands registered with Telegram.");
 
   const runner = run(bot);
-  console.log("[bot] Runner started (concurrent update processing)…");
-  runner.task().then(() => console.log("[bot] Runner stopped."));
+  log.info("[bot] Runner started (concurrent update processing)…");
+  runner.task().then(() => log.info("[bot] Runner stopped."));
 }
 
-main().catch(console.error);
+main().catch((e) => log.error(e, "fatal startup error"));
