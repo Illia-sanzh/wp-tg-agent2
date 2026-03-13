@@ -7,7 +7,7 @@ on:
     branches: [main, dev]
 
 jobs:
-  lint:
+  install:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,21 +16,97 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - uses: actions/cache/save@v4
+        with:
+          path: |
+            node_modules
+            agent/node_modules
+            telegram-bot/node_modules
+          key: nm-${{ hashFiles('package-lock.json') }}
+
+  lint:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            agent/node_modules
+            telegram-bot/node_modules
+          key: nm-${{ hashFiles('package-lock.json') }}
       - run: npm run lint
+      - run: npm run format:check
 
   typecheck:
+    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            agent/node_modules
+            telegram-bot/node_modules
+          key: nm-${{ hashFiles('package-lock.json') }}
       - run: npm run typecheck
 
-  build:
+  test:
+    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            node_modules
+            agent/node_modules
+            telegram-bot/node_modules
+          key: nm-${{ hashFiles('package-lock.json') }}
+      - run: npm test
+
+  docker-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [agent, telegram-bot, squid]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t greenclaw-${{ matrix.service }}:ci ./${{ matrix.service }}
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate dev compose config
+        run: docker compose config --quiet
+      - name: Validate prod compose config
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+
+  config-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate LiteLLM config YAML
+        run: python3 -c "import yaml; yaml.safe_load(open('litellm/config.yaml'))"
+      - name: Check required files exist
+        run: |
+          test -f agent/Dockerfile
+          test -f telegram-bot/Dockerfile
+          test -f squid/Dockerfile
+          test -f agent/agent.ts
+          test -f telegram-bot/bot.ts
+      - name: Verify no secrets in repo
+        run: |
+          ! grep -rn "sk-[a-zA-Z0-9]\{20,\}" --include="*.ts" --include="*.yml" --include="*.yaml" --include="*.json" . || { echo "Possible API key found"; exit 1; }

@@ -7,8 +7,8 @@
     "telegram-bot"
   ],
   "scripts": {
-    "lint": "eslint agent/agent.ts telegram-bot/bot.ts",
-    "lint:fix": "eslint --fix agent/agent.ts telegram-bot/bot.ts",
+    "lint": "eslint \"agent/**/*.ts\" \"telegram-bot/**/*.ts\" --ignore-pattern \"**/node_modules\" --ignore-pattern \"**/dist\"",
+    "lint:fix": "eslint --fix \"agent/**/*.ts\" \"telegram-bot/**/*.ts\" --ignore-pattern \"**/node_modules\" --ignore-pattern \"**/dist\"",
     "format": "prettier --write \"agent/**/*.ts\" \"telegram-bot/**/*.ts\"",
     "format:check": "prettier --check \"agent/**/*.ts\" \"telegram-bot/**/*.ts\"",
     "test": "vitest run",
