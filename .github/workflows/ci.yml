@@ -89,6 +89,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Create dummy .env for config validation
+        run: touch .env
       - name: Validate dev compose config
         run: docker compose config --quiet
       - name: Validate prod compose config
