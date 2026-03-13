@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "Telegram Bot for WordPress Agent — TypeScript",
   "scripts": {
-    "start": "tsx bot.ts"
+    "start": "tsx bot.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@grammyjs/runner": "^2.0.3",

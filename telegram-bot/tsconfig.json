@@ -9,6 +9,6 @@
     "skipLibCheck": true,
     "outDir": "./dist"
   },
-  "include": ["bot.ts"],
+  "include": ["bot.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
