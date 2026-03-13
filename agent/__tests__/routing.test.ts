@@ -1,127 +1,7 @@
-// Routing and profile tests for agent logic.
-// Functions duplicated from agent.ts — Phase 4 will extract and import properly.
-
 import { describe, it, expect } from "vitest";
-
-// ── Duplicated types & constants from agent.ts ──────────────────────────────
-
-interface TaskProfile {
-  name: string;
-  tools: string[];
-  promptSections: string[];
-  knowledgePatterns: string[];
-  skillFileSections: string[];
-  maxSteps: number;
-  maxTokens: number;
-  maxOutputChars: number;
-  model?: string;
-  singleShot?: boolean;
-}
-
-const TASK_PROFILES: Record<string, TaskProfile> = {
-  forum_reply: {
-    name: "forum_reply",
-    tools: ["reply_to_forum"],
-    promptSections: ["identity", "wp_config"],
-    knowledgePatterns: [],
-    skillFileSections: [],
-    maxSteps: 2,
-    maxTokens: 1024,
-    maxOutputChars: 2000,
-    model: "cheap",
-    singleShot: true,
-  },
-  inbound_notify: {
-    name: "inbound_notify",
-    tools: [],
-    promptSections: ["identity"],
-    knowledgePatterns: [],
-    skillFileSections: [],
-    maxSteps: 0,
-    maxTokens: 0,
-    maxOutputChars: 0,
-  },
-  wp_admin: {
-    name: "wp_admin",
-    tools: ["run_command", "read_file", "wp_rest", "wp_cli_remote", "write_file", "reply_to_forum", "wp_ability__"],
-    promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "abilities"],
-    knowledgePatterns: [],
-    skillFileSections: ["capabilities", "wpcli", "safety", "guardrails", "content_formatting", "common_skills"],
-    maxSteps: 30,
-    maxTokens: 8192,
-    maxOutputChars: 10000,
-  },
-  scheduling: {
-    name: "scheduling",
-    tools: ["schedule_task", "run_command", "wp_rest"],
-    promptSections: ["identity", "wp_config", "execution_rules", "scheduling"],
-    knowledgePatterns: [],
-    skillFileSections: [],
-    maxSteps: 5,
-    maxTokens: 2048,
-    maxOutputChars: 4000,
-  },
-  web_design: {
-    name: "web_design",
-    tools: ["run_command", "read_file", "wp_rest", "write_file", "fetch_page", "skill_", "wp_cli_remote"],
-    promptSections: [
-      "identity",
-      "wp_config",
-      "execution_rules",
-      "efficiency_rules",
-      "wp_mode",
-      "web_design",
-      "custom_skills",
-    ],
-    knowledgePatterns: ["*"],
-    skillFileSections: ["capabilities", "wpcli", "safety", "content_formatting", "web_design_workflow"],
-    maxSteps: 60,
-    maxTokens: 16384,
-    maxOutputChars: 12000,
-  },
-  plugin_dev: {
-    name: "plugin_dev",
-    tools: ["run_command", "read_file", "write_file", "wp_rest", "wp_cli_remote", "reply_to_forum", "fetch_page"],
-    promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode"],
-    knowledgePatterns: ["*"],
-    skillFileSections: ["capabilities", "wpcli", "safety", "guardrails"],
-    maxSteps: 80,
-    maxTokens: 16384,
-    maxOutputChars: 16000,
-  },
-  bug_fix: {
-    name: "bug_fix",
-    tools: ["mcp_server_github__", "reply_to_forum", "read_file", "wp_rest", "run_command", "write_file"],
-    promptSections: ["identity", "execution_rules", "efficiency_rules", "bug_fix_workflow"],
-    knowledgePatterns: [],
-    skillFileSections: [],
-    maxSteps: 50,
-    maxTokens: 16384,
-    maxOutputChars: 16000,
-  },
-  general: {
-    name: "general",
-    tools: ["*"],
-    promptSections: ["*"],
-    knowledgePatterns: ["*"],
-    skillFileSections: ["*"],
-    maxSteps: 60,
-    maxTokens: 16384,
-    maxOutputChars: 12000,
-  },
-};
-
-// ── Duplicated functions from agent.ts ──────────────────────────────────────
-
-function routeInboundEvent(event: string, autoRespond: boolean, metadata?: any): TaskProfile {
-  if (!autoRespond) return TASK_PROFILES.inbound_notify;
-  if (event === "new_topic" || event === "new_comment") {
-    const topicType = (metadata?.type ?? "").toLowerCase();
-    if (topicType === "bug") return TASK_PROFILES.inbound_notify;
-    return TASK_PROFILES.forum_reply;
-  }
-  return TASK_PROFILES.inbound_notify;
-}
+import { TASK_PROFILES } from "../src/profiles";
+import { routeInboundEvent } from "../src/models";
+import type { TaskProfile } from "../src/types";
 
 interface MockTool {
   function: { name: string };
@@ -141,8 +21,6 @@ function getToolsForProfile(profile: TaskProfile, allTools: MockTool[]): MockToo
   }
   return selected;
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("routeInboundEvent", () => {
   it("returns inbound_notify when autoRespond is false", () => {

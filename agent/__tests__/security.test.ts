@@ -1,26 +1,7 @@
-// Security tests for agent validation logic.
-// Functions are duplicated from agent.ts because the monolith can't be imported
-// without booting the full app. Phase 4 refactor will fix this.
-
 import { describe, it, expect } from "vitest";
 import * as path from "path";
 import * as yaml from "js-yaml";
-
-// ── Duplicated constants & functions from agent.ts ──────────────────────────
-
-const FORBIDDEN_COMMANDS = [
-  "wp db drop",
-  "wp db reset",
-  "wp site empty",
-  "wp eval",
-  "wp eval-file",
-  "wp shell",
-  "rm -rf /",
-  "mkfs",
-  "dd if=",
-  "> /dev/sda",
-  "chmod 777 /",
-];
+import { FORBIDDEN_COMMANDS, WRITABLE_PATHS } from "../src/tool-impls";
 
 function validateRunCommand(command: string): string | null {
   if (!command || !command.trim()) return "ERROR: No command provided.";
@@ -28,17 +9,10 @@ function validateRunCommand(command: string): string | null {
   for (const f of FORBIDDEN_COMMANDS) {
     if (cmdLower.includes(f)) return `ERROR: Command '${f}' is blocked for safety reasons.`;
   }
-  return null; // null = command is allowed
+  return null;
 }
 
 const WP_PATH = "/wordpress";
-
-const WRITABLE_PATHS = [
-  "/tmp/",
-  `${WP_PATH}/wp-content/plugins/`,
-  `${WP_PATH}/wp-content/themes/`,
-  `${WP_PATH}/wp-content/mu-plugins/`,
-];
 
 function validateWritePath(filePath: string): string | null {
   if (!filePath) return "ERROR: No file path provided.";
@@ -112,8 +86,6 @@ function validateSkillYaml(raw: string): Record<string, any> | string {
 
   return skill;
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("runCommand validation", () => {
   it("rejects empty commands", () => {
@@ -199,11 +171,6 @@ describe("writeFile path validation", () => {
 });
 
 describe("readFile path validation", () => {
-  // These tests use path.resolve() which behaves differently on Windows vs Linux.
-  // In production (Linux Docker), /tmp → /tmp and /wordpress → /wordpress.
-  // On Windows dev, /tmp → C:\tmp which won't match the /tmp/ prefix.
-  // We test the logic that matters: forbidden paths are blocked.
-
   it("rejects empty path", () => {
     expect(validateReadPath("")).toContain("ERROR");
   });
@@ -220,7 +187,6 @@ describe("readFile path validation", () => {
   });
 
   it("blocks path traversal", () => {
-    // Traversal out of allowed dirs should be caught regardless of OS
     expect(validateReadPath("/wordpress/../etc/passwd")).toContain("ERROR");
   });
 });
@@ -232,10 +198,8 @@ describe("validateSkillYaml", () => {
 
   it("rejects non-object YAML", () => {
     expect(validateSkillYaml("just a string")).toContain("mapping");
-    // js-yaml parses "- item1\n- item2" as an array; typeof array === "object"
-    // but it lacks .name, so it fails on the name check instead
     const arrResult = validateSkillYaml("- item1\n- item2");
-    expect(typeof arrResult).toBe("string"); // error string, not a valid skill
+    expect(typeof arrResult).toBe("string");
   });
 
   it("requires name field", () => {
