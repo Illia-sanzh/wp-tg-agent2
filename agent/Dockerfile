@@ -35,6 +35,7 @@ COPY package.json package-lock.json* ./
 RUN npm install
 
 COPY agent.ts tsconfig.json ./
+COPY src/ ./src/
 
 EXPOSE 8080
 

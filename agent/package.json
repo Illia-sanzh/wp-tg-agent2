@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "WordPress AI Agent — TypeScript",
   "scripts": {
-    "start": "tsx agent.ts"
+    "start": "tsx agent.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "axios": "^1.7.0",
