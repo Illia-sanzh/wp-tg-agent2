@@ -166,6 +166,72 @@ WordPress Abilities are plugin-registered tools exposed via the MCP Adapter (WP 
 They appear as tools with the \`wp_ability__\` prefix. Use them for operations like
 toggling maintenance mode or bulk-updating site identity.`,
 
+  plugin_dev: `## Plugin Development Guide
+
+### Workflow
+1. **Scaffold first**: Run \`wp scaffold plugin <slug> --path=${WP_PATH} --allow-root\` to generate boilerplate (main file, readme.txt, tests). Do NOT create plugin files manually from scratch.
+2. **Plan the structure**: For complex plugins, list the files you'll create before writing any code. Group related functionality into classes/files.
+3. **Write incrementally**: Create one file at a time using \`write_file\`. After each critical file, activate the plugin and check for fatal errors.
+4. **Validate after writing**: Run \`wp plugin activate <slug> --path=${WP_PATH} --allow-root\` — if it fails, read the error, fix the file, and retry.
+5. **Test functionality**: Use WP-CLI or REST API to verify the plugin works (e.g., check registered post types, shortcodes, admin pages).
+6. **Report results**: List all created files, what the plugin does, and how to use it.
+
+### File Conventions
+- Main plugin file: \`wp-content/plugins/<slug>/<slug>.php\` — must have the plugin header comment
+- Plugin header (required):
+\`\`\`php
+<?php
+/**
+ * Plugin Name: My Plugin
+ * Description: What it does
+ * Version: 1.0.0
+ * Author: Site Admin
+ */
+\`\`\`
+- Use \`defined('ABSPATH') || exit;\` as the first line after the header
+- Hooks: use \`register_activation_hook\`, \`register_deactivation_hook\` for setup/teardown
+- Prefix all functions/classes with the plugin slug to avoid conflicts
+- Enqueue scripts/styles with \`wp_enqueue_script\` / \`wp_enqueue_style\`, never inline
+
+### Common Plugin Patterns
+- **Custom Post Type**: \`register_post_type()\` in \`init\` hook
+- **Settings page**: \`add_options_page()\` in \`admin_menu\` hook + \`register_setting()\` in \`admin_init\`
+- **Shortcode**: \`add_shortcode('tag', 'callback')\`
+- **REST endpoint**: \`register_rest_route()\` in \`rest_api_init\` hook
+- **Cron job**: \`wp_schedule_event()\` on activation + \`add_action('hook_name', callback)\`
+- **Widget**: extend \`WP_Widget\` class
+- **Admin notice**: \`add_action('admin_notices', callback)\`
+
+### Security Essentials
+- Sanitize ALL input: \`sanitize_text_field()\`, \`absint()\`, \`wp_kses_post()\`
+- Escape ALL output: \`esc_html()\`, \`esc_attr()\`, \`esc_url()\`, \`wp_kses_post()\`
+- Use nonces for forms: \`wp_nonce_field()\` / \`wp_verify_nonce()\`
+- Check capabilities: \`current_user_can('manage_options')\` before admin actions
+- Use \`$wpdb->prepare()\` for ALL database queries with user input
+
+### Multi-File Plugin Structure (for complex plugins)
+\`\`\`
+my-plugin/
+├── my-plugin.php          (main file, hooks, init)
+├── includes/
+│   ├── class-admin.php    (admin pages, settings)
+│   ├── class-public.php   (frontend output)
+│   └── class-api.php      (REST endpoints)
+├── assets/
+│   ├── css/style.css
+│   └── js/script.js
+├── templates/
+│   └── template-part.php
+└── readme.txt
+\`\`\`
+
+### Quality Checklist (verify before reporting done)
+- [ ] Plugin activates without errors
+- [ ] No PHP warnings in debug.log (\`wp config set WP_DEBUG true\` then check)
+- [ ] All user input sanitized, all output escaped
+- [ ] Functions/classes prefixed with plugin slug
+- [ ] Deactivation/uninstall cleans up (removes options, cron jobs, custom tables)`,
+
   bug_fix_workflow: `## Bug Fix Workflow
 
 You have received a bug report from the forum. Your job is to analyze it, find the problematic code in GitHub, fix it, and submit a pull request.

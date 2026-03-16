@@ -78,7 +78,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
   plugin_dev: {
     name: "plugin_dev",
     tools: ["run_command", "read_file", "write_file", "wp_rest", "wp_cli_remote", "reply_to_forum", "fetch_page"],
-    promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode"],
+    promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "plugin_dev"],
     knowledgePatterns: ["*"],
     skillFileSections: ["capabilities", "wpcli", "safety", "guardrails"],
     maxSteps: 80,
