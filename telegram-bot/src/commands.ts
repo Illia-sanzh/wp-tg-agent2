@@ -31,6 +31,28 @@ export function registerCommands(): void {
     );
   });
 
+  bot.command("help", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    await ctx.reply(
+      "*Commands:*\n" +
+        "`/status`  — agent health & loaded skills\n" +
+        "`/model`   — show or switch AI model\n" +
+        "`/model auto` — enable smart routing\n" +
+        "`/tasks`   — list scheduled tasks\n" +
+        "`/tasks cancel <id>` — cancel a task\n" +
+        "`/skill`   — manage skills (list/create/delete)\n" +
+        "`/mcp`     — manage MCP tool servers\n" +
+        "`/stop`    — abort current request\n" +
+        "`/cancel`  — clear history & stop all\n\n" +
+        "*Tips:*\n" +
+        "• Just type in plain English — no command needed\n" +
+        "• Send a voice note to speak your task\n" +
+        "• Send a photo to upload or use in posts\n" +
+        "• Paste a GitHub URL to install skills from repos",
+      { parse_mode: "Markdown" },
+    );
+  });
+
   bot.command("status", async (ctx) => {
     if (!isAdmin(ctx)) return;
     try {
@@ -114,6 +136,32 @@ export function registerCommands(): void {
     } else {
       ctx.session.model = choice;
       await ctx.reply(`✅ Locked to model: \`${choice}\``, { parse_mode: "Markdown" });
+    }
+  });
+
+  bot.command("stats", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    try {
+      const r = await agentAxios.get(`${AGENT_URL}/audit`, { timeout: 5000 });
+      const s = r.data.stats;
+      const lines = [
+        `📊 *Agent Stats*\n`,
+        `Total tasks: \`${s.total_tasks}\``,
+        `Last 24h: \`${s.last_24h}\``,
+        `Errors (24h): \`${s.errors_24h}\``,
+      ];
+      if (s.avg_elapsed_ms) lines.push(`Avg response: \`${(s.avg_elapsed_ms / 1000).toFixed(1)}s\``);
+      if (Object.keys(s.by_profile).length) {
+        lines.push("\n*By profile:*");
+        for (const [p, c] of Object.entries(s.by_profile)) lines.push(`  ${p}: \`${c}\``);
+      }
+      if (Object.keys(s.by_model).length) {
+        lines.push("\n*By model:*");
+        for (const [m, c] of Object.entries(s.by_model)) lines.push(`  ${m}: \`${c}\``);
+      }
+      await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+    } catch (e) {
+      await ctx.reply(`❌ Error fetching stats: ${sanitize(String(e))}`);
     }
   });
 

@@ -14,8 +14,10 @@ export async function main(): Promise<void> {
 
   await bot.api.setMyCommands([
     { command: "start", description: "Welcome message & feature list" },
+    { command: "help", description: "Quick command reference" },
     { command: "status", description: "Check agent health" },
     { command: "model", description: "Show or switch AI model" },
+    { command: "stats", description: "Task statistics and usage" },
     { command: "stop", description: "Abort current AI request" },
     { command: "cancel", description: "Clear history / cancel active flow" },
     { command: "tasks", description: "List or cancel scheduled tasks" },

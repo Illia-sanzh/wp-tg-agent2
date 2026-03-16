@@ -22,6 +22,7 @@ export const ADMIN_USER_IDS = new Set<number>(
 );
 
 export const AGENT_URL = process.env.AGENT_URL ?? "http://greenclaw-agent:8080";
+export const AGENT_AUTH_TOKEN = process.env.LITELLM_MASTER_KEY ?? "";
 export const DEFAULT_MODEL = process.env.DEFAULT_MODEL ?? "claude-sonnet-4-6";
 export const AUTO_ROUTING = (process.env.AUTO_ROUTING ?? "false").toLowerCase() === "true";
 export const FAST_MODEL = process.env.FAST_MODEL ?? "claude-haiku-4-5";
