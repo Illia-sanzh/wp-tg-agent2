@@ -7,8 +7,10 @@ import { createScheduler } from "./scheduler";
 import { probeModels } from "./models";
 import { installProcessHandlers } from "./notify";
 import { createApp } from "./routes";
+import { runStartupValidation } from "./validate";
 
 export async function main(): Promise<void> {
+  runStartupValidation();
   installProcessHandlers();
   loadThreads();
 
