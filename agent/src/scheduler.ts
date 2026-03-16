@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
 import schedule from "node-schedule";
-import { log, SCHEDULE_DB } from "./config";
+import { log, SCHEDULE_DB, DEFAULT_MODEL } from "./config";
 import { notifyTelegram } from "./notify";
+import { logAudit } from "./audit";
 import type { StoredJob } from "./types";
 
 export class PersistentScheduler {
@@ -130,8 +131,26 @@ async function executeScheduledTask(taskLabel: string, taskText: string): Promis
   } catch (e) {
     resultText = `❌ Scheduled task error: ${e}`;
     log.error({ err: e, task: taskLabel }, "scheduled task error");
+    await notifyTelegram(`❌ *Scheduled task failed:* _${taskLabel}_\n\n${e}`);
+    logAudit({
+      source: "scheduler",
+      message: taskLabel,
+      model: DEFAULT_MODEL,
+      status: "error",
+      result: String(e),
+      elapsed_ms: elapsed * 1000,
+    });
+    return;
   }
   log.info(`[scheduler] Done: ${taskLabel} in ${elapsed}s`);
+  logAudit({
+    source: "scheduler",
+    message: taskLabel,
+    model: DEFAULT_MODEL,
+    status: "ok",
+    result: resultText,
+    elapsed_ms: elapsed * 1000,
+  });
   await notifyTelegram(`⏰ *Scheduled task complete:* _${taskLabel}_\n\n${resultText}`);
 }
 

@@ -13,6 +13,7 @@ import { cleanExpiredBugs } from "../bugs";
 import { notifyTelegram } from "../notify";
 import { whisperClient } from "../http";
 import type { TaskProfile } from "../types";
+import { logAudit, getAuditStats, getRecentAuditEntries } from "../audit";
 
 export const coreRouter = Router();
 
@@ -44,6 +45,14 @@ coreRouter.get("/health", (_req, res) => {
       github_mcp: state.cachedMcpTools.some((t) => t.function.name.startsWith("mcp_server_github__")),
       pending_bugs: state.pendingBugs.size,
     },
+    audit: getAuditStats(),
+  });
+});
+
+coreRouter.get("/audit", (_req, res) => {
+  res.json({
+    stats: getAuditStats(),
+    recent: getRecentAuditEntries(50),
   });
 });
 
@@ -72,14 +81,28 @@ coreRouter.post("/task", async (req: Request, res: Response) => {
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Transfer-Encoding", "chunked");
 
+  let lastResult: { text?: string; elapsed?: number; model?: string } = {};
   try {
     for await (const event of runAgent(msg, model, trimmedHistory, profile)) {
       res.write(JSON.stringify(event) + "\n");
-      if (event.type === "result") log.info({ elapsed: event.elapsed, profile: profile.name }, "task complete");
+      if (event.type === "result") {
+        lastResult = event;
+        log.info({ elapsed: event.elapsed, profile: profile.name }, "task complete");
+      }
     }
+    logAudit({
+      source: "task",
+      profile: profile.name,
+      message: msg,
+      model,
+      result: lastResult.text,
+      elapsed_ms: lastResult.elapsed ? lastResult.elapsed * 1000 : undefined,
+      status: "ok",
+    });
   } catch (e) {
     log.error({ err: e }, "unhandled exception in streaming generator");
     res.write(JSON.stringify({ type: "result", text: `❌ Internal agent error: ${e}`, elapsed: 0, model }) + "\n");
+    logAudit({ source: "task", profile: profile.name, message: msg, model, status: "error", result: String(e) });
   }
   res.end();
 });
@@ -135,6 +158,15 @@ coreRouter.post("/bugfix/:postId", async (req: Request, res: Response) => {
       res.write(JSON.stringify(event) + "\n");
       if (event.type === "result") {
         log.info(`[bugfix] Bug #${postId} done in ${event.elapsed}s`);
+        logAudit({
+          source: "bugfix",
+          profile: "bug_fix",
+          message: bug.title,
+          model,
+          result: event.text,
+          elapsed_ms: event.elapsed ? event.elapsed * 1000 : undefined,
+          status: "ok",
+        });
         const respLines = [`🐛 Bug Fix Complete`, "", `📝 Bug: ${bug.title}`];
         if (bug.metadata?.link) respLines.push(`🔗 Forum: ${bug.metadata.link}`);
         respLines.push("");
@@ -149,6 +181,7 @@ coreRouter.post("/bugfix/:postId", async (req: Request, res: Response) => {
   } catch (e) {
     log.error({ err: e, postId }, "bugfix error");
     res.write(JSON.stringify({ type: "result", text: `❌ Bug fix error: ${e}`, elapsed: 0, model }) + "\n");
+    logAudit({ source: "bugfix", profile: "bug_fix", message: bug.title, model, status: "error", result: String(e) });
   }
   res.end();
 });
@@ -331,6 +364,16 @@ Your entire response will be posted as a comment on the forum topic.`;
     respLines.push(resultText.slice(0, 3500));
     notifyTelegram(respLines.join("\n"), chatIds).catch(() => {});
   }
+
+  logAudit({
+    source: "inbound",
+    profile: profile.name,
+    message: title || content?.slice(0, 200),
+    model,
+    result: resultText,
+    elapsed_ms: elapsed * 1000,
+    status: resultText.startsWith("Error") ? "error" : "ok",
+  });
 
   res.json({
     status: "ok",
