@@ -1,3 +1,4 @@
+import { InputFile } from "grammy";
 import { MyContext } from "./types";
 import { AGENT_URL, DEFAULT_MODEL, AUTO_ROUTING, log } from "./config";
 import { agentAxios } from "./http";
@@ -134,11 +135,11 @@ export async function runAgentTask(ctx: MyContext, taskText: string): Promise<vo
     }
   }
 
-  for (const imgUrl of imageUrls) {
+  for (const b64 of imageUrls) {
     try {
-      await ctx.replyWithPhoto(imgUrl);
+      await ctx.replyWithPhoto(new InputFile(Buffer.from(b64, "base64"), "screenshot.png"));
     } catch (e) {
-      log.warn(`Failed to send photo ${imgUrl}: ${e}`);
+      log.warn(`Failed to send photo to Telegram: ${e}`);
     }
   }
 }

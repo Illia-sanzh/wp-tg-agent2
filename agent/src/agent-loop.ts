@@ -12,7 +12,6 @@ import type { TaskProfile, AgentEvent, ChatMessage } from "./types";
 
 const SUMMARIZE_AFTER = 6;
 const IMAGE_MARKER_RE = /\[IMAGE:([^\]]+)\]/g;
-const PUBLIC_URL_RE = /Public URL:\s*(https?:\/\/\S+)/;
 const VISION_MODELS = ["claude", "gpt-4o", "gpt-4-turbo", "gemini"];
 
 function supportsVision(model: string): boolean {
@@ -325,10 +324,8 @@ export async function* runAgent(
       }
       log.info(`[agent]   → ${String(toolResult).slice(0, 200)}`);
 
-      const urlMatch = toolResult.match(PUBLIC_URL_RE);
-      if (urlMatch) collectedImages.push(urlMatch[1]);
-
       const { text: cleanResult, images } = extractImages(toolResult);
+      collectedImages.push(...images);
       if (images.length > 0 && supportsVision(model)) {
         const contentParts: any[] = [{ type: "text", text: cleanResult || "Screenshot captured." }];
         for (const b64 of images) {
