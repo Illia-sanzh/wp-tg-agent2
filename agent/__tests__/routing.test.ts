@@ -70,6 +70,8 @@ describe("getToolsForProfile", () => {
     { function: { name: "wp_cli_remote" } },
     { function: { name: "schedule_task" } },
     { function: { name: "fetch_page" } },
+    { function: { name: "web_search" } },
+    { function: { name: "screenshot" } },
     { function: { name: "reply_to_forum" } },
     { function: { name: "skill_deploy_site" } },
     { function: { name: "skill_backup_db" } },
@@ -91,7 +93,8 @@ describe("getToolsForProfile", () => {
     expect(names).toContain("wp_rest");
     expect(names).toContain("write_file");
     expect(names).toContain("reply_to_forum");
-    expect(names).not.toContain("fetch_page");
+    expect(names).toContain("fetch_page");
+    expect(names).toContain("web_search");
     expect(names).not.toContain("schedule_task");
   });
 
