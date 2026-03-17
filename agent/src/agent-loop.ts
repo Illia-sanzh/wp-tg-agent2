@@ -12,6 +12,12 @@ import type { TaskProfile, AgentEvent, ChatMessage } from "./types";
 
 const SUMMARIZE_AFTER = 6;
 const IMAGE_MARKER_RE = /\[IMAGE:([^\]]+)\]/g;
+const VISION_MODELS = ["claude", "gpt-4o", "gpt-4-turbo", "gemini"];
+
+function supportsVision(model: string): boolean {
+  const m = model.toLowerCase();
+  return VISION_MODELS.some((v) => m.includes(v));
+}
 
 function extractImages(toolResult: string): { text: string; images: string[] } {
   const images: string[] = [];
@@ -312,7 +318,7 @@ export async function* runAgent(
       log.info(`[agent]   → ${String(toolResult).slice(0, 200)}`);
 
       const { text: cleanResult, images } = extractImages(toolResult);
-      if (images.length > 0) {
+      if (images.length > 0 && supportsVision(model)) {
         const contentParts: any[] = [{ type: "text", text: cleanResult || "Screenshot captured." }];
         for (const b64 of images) {
           contentParts.push({
@@ -322,7 +328,7 @@ export async function* runAgent(
         }
         messages.push({ role: "tool", tool_call_id: tc.id, content: contentParts } as any);
       } else {
-        messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult } as any);
+        messages.push({ role: "tool", tool_call_id: tc.id, content: cleanResult || toolResult } as any);
       }
 
       if (String(toolResult).startsWith("ERROR")) {
