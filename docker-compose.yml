@@ -200,7 +200,8 @@ services:
       SEARXNG_BASE_URL: "http://localhost:8888/"
     mem_limit: 256m
     networks:
-      agent-internal: {}
+      agent-internal: {}   # Agent reaches it here
+      proxy-external: {}   # Needs internet for DNS + search engine queries
     depends_on:
       greenclaw-squid:
         condition: service_healthy
@@ -220,10 +221,11 @@ services:
     environment:
       CONNECTION_TIMEOUT: "60000"
       MAX_CONCURRENT_SESSIONS: "3"
-      DEFAULT_LAUNCH_ARGS: '["--proxy-server=http://greenclaw-squid:3128","--no-sandbox","--disable-dev-shm-usage"]'
+      DEFAULT_LAUNCH_ARGS: '["--no-sandbox","--disable-dev-shm-usage"]'
     mem_limit: 1024m
     networks:
-      agent-internal: {}
+      agent-internal: {}   # Agent reaches it here
+      proxy-external: {}   # Chrome needs internet to load pages
     depends_on:
       greenclaw-squid:
         condition: service_healthy

@@ -14,9 +14,6 @@ search:
     - json
 
 outgoing:
-  proxies:
-    all://:
-      - http://greenclaw-squid:3128
   request_timeout: 10.0
   useragent_suffix: ""
 
