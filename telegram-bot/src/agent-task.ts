@@ -112,6 +112,13 @@ export async function runAgentTask(ctx: MyContext, taskText: string): Promise<vo
     await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id);
   } catch {}
 
+  // Strip internal image markers
+  result = result.replace(/\[IMAGE:[^\]]+\]/g, "").trim();
+
+  // Extract image URLs from result and send as photos
+  const imageUrlRegex = /(https?:\/\/\S+\.(?:png|jpg|jpeg|gif|webp))/gi;
+  const imageUrls = [...new Set(result.match(imageUrlRegex) ?? [])];
+
   const MAX_LEN = 4000;
   const footer = `\n\n_⏱ ${elapsed}s • ${modelUsed}_`;
   const chunks = [];
@@ -127,6 +134,14 @@ export async function runAgentTask(ctx: MyContext, taskText: string): Promise<vo
       } catch (e2) {
         log.error(`Failed to send chunk: ${e2}`);
       }
+    }
+  }
+
+  for (const imgUrl of imageUrls) {
+    try {
+      await ctx.replyWithPhoto(imgUrl);
+    } catch (e) {
+      log.warn(`Failed to send photo ${imgUrl}: ${e}`);
     }
   }
 }

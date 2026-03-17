@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import type OpenAI from "openai";
 import { log, DEFAULT_MODEL, FALLBACK_MODEL, OR_FALLBACK_MODEL, MAX_STEPS, MAX_OUTPUT_CHARS } from "./config";
 import { state } from "./state";
@@ -10,6 +11,25 @@ import { dispatchTool, toolLabel } from "./tool-dispatch";
 import type { TaskProfile, AgentEvent, ChatMessage } from "./types";
 
 const SUMMARIZE_AFTER = 6;
+const IMAGE_MARKER_RE = /\[IMAGE:([^\]]+)\]/g;
+
+function extractImages(toolResult: string): { text: string; images: string[] } {
+  const images: string[] = [];
+  const text = toolResult
+    .replace(IMAGE_MARKER_RE, (_, filePath: string) => {
+      try {
+        if (fs.existsSync(filePath)) {
+          const buf = fs.readFileSync(filePath);
+          images.push(buf.toString("base64"));
+        }
+      } catch (e) {
+        log.warn(`[agent] Failed to read image ${filePath}: ${e}`);
+      }
+      return "";
+    })
+    .trim();
+  return { text, images };
+}
 
 export async function summarizeHistory(
   history: Array<{ role: string; content: string }>,
@@ -291,7 +311,19 @@ export async function* runAgent(
       }
       log.info(`[agent]   → ${String(toolResult).slice(0, 200)}`);
 
-      messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult } as any);
+      const { text: cleanResult, images } = extractImages(toolResult);
+      if (images.length > 0) {
+        const contentParts: any[] = [{ type: "text", text: cleanResult || "Screenshot captured." }];
+        for (const b64 of images) {
+          contentParts.push({
+            type: "image_url",
+            image_url: { url: `data:image/png;base64,${b64}` },
+          });
+        }
+        messages.push({ role: "tool", tool_call_id: tc.id, content: contentParts } as any);
+      } else {
+        messages.push({ role: "tool", tool_call_id: tc.id, content: toolResult } as any);
+      }
 
       if (String(toolResult).startsWith("ERROR")) {
         stepHadError = true;

@@ -394,7 +394,7 @@ export async function screenshot(url: string, fullPage = false): Promise<string>
       `${BROWSER_URL}/screenshot`,
       {
         url,
-        options: { fullPage, type: "png" },
+        options: { fullPage, type: "png", quality: 80 },
         gotoOptions: { waitUntil: "networkidle2", timeout: 30_000 },
       },
       {
@@ -406,15 +406,24 @@ export async function screenshot(url: string, fullPage = false): Promise<string>
 
     const buffer = Buffer.from(resp.data);
     const filename = `screenshot-${Date.now()}.png`;
+    const tmpPath = `/tmp/${filename}`;
+    fs.writeFileSync(tmpPath, buffer);
 
     const upload = await uploadMediaToWp(buffer, filename, "image/png");
-    if (upload.error) {
-      const tmpPath = `/tmp/${filename}`;
-      fs.writeFileSync(tmpPath, buffer);
-      return `Screenshot saved to ${tmpPath} (${buffer.length} bytes). WordPress upload failed: ${upload.error}`;
+
+    let publicUrl = "";
+    if (!upload.error && upload.url) {
+      publicUrl = upload.url;
+      if (WP_URL && publicUrl.includes("host.docker.internal")) {
+        publicUrl = publicUrl.replace(/https?:\/\/host\.docker\.internal/, WP_URL.replace(/\/$/, ""));
+      }
     }
 
-    return `Screenshot captured and uploaded.\nURL: ${upload.url}\nMedia ID: ${upload.id}\nSize: ${buffer.length} bytes`;
+    // [IMAGE:path] marker tells the agent loop to inject this as a vision message
+    let result = `Screenshot captured (${buffer.length} bytes).\n[IMAGE:${tmpPath}]`;
+    if (publicUrl) result += `\nPublic URL: ${publicUrl}`;
+    if (upload.id) result += `\nMedia ID: ${upload.id}`;
+    return result;
   } catch (e: any) {
     if (e.code === "ECONNREFUSED") return "ERROR: Browser service unavailable. Browserless may not be running.";
     return `ERROR: Screenshot failed — ${e.message}`;
