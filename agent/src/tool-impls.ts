@@ -391,16 +391,17 @@ export async function screenshot(url: string, fullPage = false): Promise<string>
 
   try {
     const resp = await axios.post(
-      `${BROWSER_URL}/screenshot`,
+      `${BROWSER_URL}/chrome/screenshot`,
       {
         url,
-        options: { fullPage, type: "png", quality: 80 },
+        options: { fullPage, type: "png" },
         gotoOptions: { waitUntil: "networkidle2", timeout: 30_000 },
       },
       {
         timeout: 45_000,
         responseType: "arraybuffer",
         proxy: false,
+        headers: { "Content-Type": "application/json" },
       },
     );
 
