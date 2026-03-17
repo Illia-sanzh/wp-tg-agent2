@@ -31,6 +31,7 @@ export async function runAgentTask(ctx: MyContext, taskText: string): Promise<vo
   let result = "(no result)";
   let elapsed = 0;
   let modelUsed = model;
+  let imageUrls: string[] = [];
   const steps: string[] = [];
 
   function buildStatus(): string {
@@ -75,6 +76,7 @@ export async function runAgentTask(ctx: MyContext, taskText: string): Promise<vo
               result = event.text ?? "(no result)";
               elapsed = event.elapsed ?? 0;
               modelUsed = event.model ?? model;
+              if (event.images?.length) imageUrls = event.images;
             }
           } catch {}
         }
@@ -112,12 +114,7 @@ export async function runAgentTask(ctx: MyContext, taskText: string): Promise<vo
     await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id);
   } catch {}
 
-  // Strip internal image markers
   result = result.replace(/\[IMAGE:[^\]]+\]/g, "").trim();
-
-  // Extract image URLs from result and send as photos
-  const imageUrlRegex = /(https?:\/\/\S+\.(?:png|jpg|jpeg|gif|webp))/gi;
-  const imageUrls = [...new Set(result.match(imageUrlRegex) ?? [])];
 
   const MAX_LEN = 4000;
   const footer = `\n\n_⏱ ${elapsed}s • ${modelUsed}_`;

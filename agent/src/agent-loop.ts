@@ -12,6 +12,7 @@ import type { TaskProfile, AgentEvent, ChatMessage } from "./types";
 
 const SUMMARIZE_AFTER = 6;
 const IMAGE_MARKER_RE = /\[IMAGE:([^\]]+)\]/g;
+const PUBLIC_URL_RE = /Public URL:\s*(https?:\/\/\S+)/;
 const VISION_MODELS = ["claude", "gpt-4o", "gpt-4-turbo", "gemini"];
 
 function supportsVision(model: string): boolean {
@@ -184,6 +185,7 @@ export async function* runAgent(
   let recentErrors: string[] = [];
   let lastToolSig = "";
   let repeatCount = 0;
+  const collectedImages: string[] = [];
   const profileTools = getToolsForProfile(profile);
   const maxSteps = profile.maxSteps || MAX_STEPS;
   const maxTokens = profile.maxTokens || 16384;
@@ -285,7 +287,13 @@ export async function* runAgent(
     messages.push({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls } as any);
 
     if (!msg.tool_calls?.length) {
-      yield { type: "result", text: msg.content ?? "(no response)", elapsed: (Date.now() - start) / 1000, model };
+      yield {
+        type: "result",
+        text: msg.content ?? "(no response)",
+        elapsed: (Date.now() - start) / 1000,
+        model,
+        ...(collectedImages.length ? { images: collectedImages } : {}),
+      };
       return;
     }
 
@@ -316,6 +324,9 @@ export async function* runAgent(
         toolResult = toolResult.slice(0, maxOutput) + `\n... [truncated, ${toolResult.length} total chars]`;
       }
       log.info(`[agent]   → ${String(toolResult).slice(0, 200)}`);
+
+      const urlMatch = toolResult.match(PUBLIC_URL_RE);
+      if (urlMatch) collectedImages.push(urlMatch[1]);
 
       const { text: cleanResult, images } = extractImages(toolResult);
       if (images.length > 0 && supportsVision(model)) {
@@ -357,6 +368,7 @@ export async function* runAgent(
         text: `I've encountered errors on ${consecutiveErrors} consecutive attempts and stopped to avoid wasting time.${errorDetail}\n\nPlease check the approach and try again with more specific instructions.`,
         elapsed: (Date.now() - start) / 1000,
         model,
+        ...(collectedImages.length ? { images: collectedImages } : {}),
       };
       return;
     }
@@ -369,6 +381,7 @@ export async function* runAgent(
         text: `I got stuck in a loop — repeated the same "${repeatedAction}" call ${repeatCount + 1} times. Could you rephrase what you'd like me to do?`,
         elapsed: (Date.now() - start) / 1000,
         model,
+        ...(collectedImages.length ? { images: collectedImages } : {}),
       };
       return;
     }
@@ -387,5 +400,6 @@ export async function* runAgent(
     text: "Reached the maximum number of steps. The task may be partially complete.",
     elapsed: (Date.now() - start) / 1000,
     model,
+    ...(collectedImages.length ? { images: collectedImages } : {}),
   };
 }
