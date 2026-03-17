@@ -64,10 +64,10 @@ Categories:
 - forum_reply: replying to a forum post or comment, answering a question from a forum user
 - inbound_notify: event that only needs to be forwarded (votes, priority changes, type changes) — no AI response needed
 - bug_fix: investigating a bug report, searching code in GitHub, creating a fix, submitting a pull request
-- wp_admin: WordPress admin tasks (plugin management, user management, settings, content CRUD, database queries, site maintenance)
+- wp_admin: WordPress admin tasks (plugin management, user management, settings, content CRUD, database queries, site maintenance). Also small plugin fixes: changing a URL, fixing a bug, tweaking a value, editing a single file.
 - scheduling: scheduling tasks for the future, cron jobs, reminders
 - web_design: creating or modifying web pages, HTML/CSS, designing layouts, replicating designs
-- plugin_dev: creating new WordPress plugins from scratch, building forms/features as plugins, or making significant modifications to existing plugin code (adding features, rewriting sections, changing behavior). Also use for modifying existing plugins: going back and changing something the agent wrote, fixing plugin issues, updating plugin functionality.
+- plugin_dev: creating NEW WordPress plugins from scratch, or MAJOR rewrites (adding multiple features, restructuring, building multi-file plugins). NOT for small edits or quick fixes — use wp_admin for those.
 - general: anything that doesn't fit above, or complex multi-domain tasks
 
 Respond with ONLY the category name, nothing else.`;
