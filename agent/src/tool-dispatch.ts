@@ -14,6 +14,8 @@ import {
   writeFile,
   readFile,
   replyToForum,
+  webSearch,
+  screenshot,
 } from "./tool-impls";
 import { MCP_RUNNER_URL, wpMcpSession, wpMcpCall } from "./tool-loaders";
 
@@ -133,6 +135,8 @@ export async function dispatchTool(name: string, args: Record<string, any>): Pro
   if (name === "schedule_task") return scheduleTaskFn(args.task ?? "", args.run_at, args.cron, args.label);
   if (name === "reply_to_forum") return replyToForum(args.post_id ?? 0, args.content ?? "");
   if (name === "fetch_page") return fetchPage(args.url ?? "");
+  if (name === "web_search") return webSearch(args.query ?? "", args.max_results ?? 5);
+  if (name === "screenshot") return screenshot(args.url ?? "", args.full_page === true);
   if (name.startsWith("skill_")) return dispatchSkill(name, args);
   if (name.startsWith("mcp_")) return dispatchMcpTool(name, args);
   if (name.startsWith("wp_ability__")) return dispatchWpAbility(name, args);
@@ -168,6 +172,10 @@ export function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
     return reason ? `💬 ${reason.slice(0, 120)}` : `💬 Replying to forum post ${fnArgs.post_id ?? ""}`;
   if (fnName === "fetch_page")
     return reason ? `🌍 ${reason.slice(0, 120)}` : `🌍 Fetching: ${(fnArgs.url ?? "").slice(0, 100)}`;
+  if (fnName === "web_search")
+    return reason ? `🔎 ${reason.slice(0, 120)}` : `🔎 Searching: ${(fnArgs.query ?? "").slice(0, 100)}`;
+  if (fnName === "screenshot")
+    return reason ? `📸 ${reason.slice(0, 120)}` : `📸 Screenshot: ${(fnArgs.url ?? "").slice(0, 100)}`;
   if (fnName.startsWith("skill_"))
     return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
   if (fnName.startsWith("wp_ability__"))

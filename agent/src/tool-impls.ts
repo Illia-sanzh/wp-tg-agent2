@@ -12,6 +12,8 @@ import {
   WP_APP_PASSWORD,
   WP_ADMIN_PASSWORD,
   BRIDGE_SECRET,
+  SEARXNG_URL,
+  BROWSER_URL,
 } from "./config";
 import { state } from "./state";
 import { httpRequest } from "./http";
@@ -352,5 +354,69 @@ export async function uploadMediaToWp(
         error: `WordPress returned HTTP ${e.response.status}: ${JSON.stringify(e.response.data).slice(0, 300)}`,
       };
     return { error: String(e.message) };
+  }
+}
+
+interface SearchResult {
+  title: string;
+  url: string;
+  content: string;
+}
+
+export async function webSearch(query: string, maxResults = 5): Promise<string> {
+  if (!query?.trim()) return "ERROR: No search query provided.";
+  const limit = Math.min(Math.max(maxResults, 1), 20);
+
+  try {
+    const resp = await axios.get(`${SEARXNG_URL}/search`, {
+      params: { q: query, format: "json", pageno: 1 },
+      timeout: 15_000,
+      proxy: false,
+    });
+
+    const results: SearchResult[] = (resp.data?.results ?? []).slice(0, limit);
+    if (results.length === 0) return `No results found for: ${query}`;
+
+    return results
+      .map((r: SearchResult, i: number) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.content}`)
+      .join("\n\n");
+  } catch (e: any) {
+    if (e.code === "ECONNREFUSED") return "ERROR: Search service unavailable. SearXNG may not be running.";
+    return `ERROR: Search failed — ${e.message}`;
+  }
+}
+
+export async function screenshot(url: string, fullPage = false): Promise<string> {
+  if (!url?.trim()) return "ERROR: No URL provided.";
+
+  try {
+    const resp = await axios.post(
+      `${BROWSER_URL}/screenshot`,
+      {
+        url,
+        options: { fullPage, type: "png" },
+        gotoOptions: { waitUntil: "networkidle2", timeout: 30_000 },
+      },
+      {
+        timeout: 45_000,
+        responseType: "arraybuffer",
+        proxy: false,
+      },
+    );
+
+    const buffer = Buffer.from(resp.data);
+    const filename = `screenshot-${Date.now()}.png`;
+
+    const upload = await uploadMediaToWp(buffer, filename, "image/png");
+    if (upload.error) {
+      const tmpPath = `/tmp/${filename}`;
+      fs.writeFileSync(tmpPath, buffer);
+      return `Screenshot saved to ${tmpPath} (${buffer.length} bytes). WordPress upload failed: ${upload.error}`;
+    }
+
+    return `Screenshot captured and uploaded.\nURL: ${upload.url}\nMedia ID: ${upload.id}\nSize: ${buffer.length} bytes`;
+  } catch (e: any) {
+    if (e.code === "ECONNREFUSED") return "ERROR: Browser service unavailable. Browserless may not be running.";
+    return `ERROR: Screenshot failed — ${e.message}`;
   }
 }

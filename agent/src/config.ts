@@ -39,6 +39,9 @@ export const THREADS_DB = path.join(DATA_DIR, "threads.json");
 
 export const INBOUND_SECRET = process.env.INBOUND_SECRET ?? "";
 
+export const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://greenclaw-searxng:8888";
+export const BROWSER_URL = process.env.BROWSER_URL ?? "http://greenclaw-browser:3000";
+
 export const MAX_STEPS = 25;
 export const MAX_OUTPUT_CHARS = 8000;
 export const PORT = 8080;

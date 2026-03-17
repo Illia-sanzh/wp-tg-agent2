@@ -93,7 +93,7 @@ services:
       # For any tool that downloads from the internet (plugins, images)
       HTTPS_PROXY: "http://greenclaw-squid:3128"
       HTTP_PROXY: "http://greenclaw-squid:3128"
-      NO_PROXY: "greenclaw-litellm,greenclaw-squid,greenclaw-bot,greenclaw-mcp-runner,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
+      NO_PROXY: "greenclaw-litellm,greenclaw-squid,greenclaw-bot,greenclaw-mcp-runner,greenclaw-searxng,greenclaw-browser,host.docker.internal,localhost,127.0.0.1,172.28.0.0/16"
       PYTHONUNBUFFERED: "1"
       SKILL_FILE: "/app/SKILL.md"
       WP_PATH: "/wordpress"
@@ -186,6 +186,53 @@ services:
     depends_on:
       greenclaw-agent:
         condition: service_healthy
+
+  # ── Search Engine ─────────────────────────────────────────────────────────
+  # Self-hosted metasearch (SearXNG). No API keys needed.
+  # Agent calls its JSON API to search the web.
+  greenclaw-searxng:
+    image: searxng/searxng:latest
+    container_name: greenclaw-searxng
+    restart: unless-stopped
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: "http://localhost:8888/"
+    mem_limit: 256m
+    networks:
+      agent-internal: {}
+    depends_on:
+      greenclaw-squid:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8888/healthz || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Headless Browser ─────────────────────────────────────────────────────
+  # Chromium for screenshots and page rendering. Agent calls its HTTP API.
+  greenclaw-browser:
+    image: browserless/chrome:latest
+    container_name: greenclaw-browser
+    restart: unless-stopped
+    environment:
+      CONNECTION_TIMEOUT: "60000"
+      MAX_CONCURRENT_SESSIONS: "3"
+      DEFAULT_LAUNCH_ARGS: '["--proxy-server=http://greenclaw-squid:3128","--no-sandbox","--disable-dev-shm-usage"]'
+    mem_limit: 1024m
+    networks:
+      agent-internal: {}
+    depends_on:
+      greenclaw-squid:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e 'fetch(\"http://localhost:3000/pressure\").then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))'"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   # ── Telegram Bot ──────────────────────────────────────────────────────────
   # User interface. Relays Telegram messages to the agent.

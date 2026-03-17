@@ -59,7 +59,17 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
   },
   web_design: {
     name: "web_design",
-    tools: ["run_command", "read_file", "wp_rest", "write_file", "fetch_page", "skill_", "wp_cli_remote"],
+    tools: [
+      "run_command",
+      "read_file",
+      "wp_rest",
+      "write_file",
+      "fetch_page",
+      "web_search",
+      "screenshot",
+      "skill_",
+      "wp_cli_remote",
+    ],
     promptSections: [
       "identity",
       "wp_config",
@@ -77,7 +87,17 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
   },
   plugin_dev: {
     name: "plugin_dev",
-    tools: ["run_command", "read_file", "write_file", "wp_rest", "wp_cli_remote", "reply_to_forum", "fetch_page"],
+    tools: [
+      "run_command",
+      "read_file",
+      "write_file",
+      "wp_rest",
+      "wp_cli_remote",
+      "reply_to_forum",
+      "fetch_page",
+      "web_search",
+      "screenshot",
+    ],
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "plugin_dev"],
     knowledgePatterns: ["plugin", "block", "gutenberg"],
     skillFileSections: ["capabilities", "wpcli", "safety", "guardrails"],
@@ -87,7 +107,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
   },
   bug_fix: {
     name: "bug_fix",
-    tools: ["mcp_server_github__", "reply_to_forum", "read_file", "wp_rest", "run_command", "write_file"],
+    tools: ["mcp_server_github__", "reply_to_forum", "read_file", "wp_rest", "run_command", "write_file", "web_search"],
     promptSections: ["identity", "execution_rules", "efficiency_rules", "bug_fix_workflow"],
     knowledgePatterns: [],
     skillFileSections: [],

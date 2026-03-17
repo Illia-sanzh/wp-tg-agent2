@@ -177,4 +177,46 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the internet for information. Returns titles, URLs, and snippets from multiple search engines. " +
+        "Use this to look up WordPress APIs, plugin documentation, PHP functions, or any other reference material.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query." },
+          max_results: {
+            type: "number",
+            description: "Max results to return (default 5, max 20).",
+          },
+          reason: { type: "string", description: "One short sentence describing why you're searching." },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "screenshot",
+      description:
+        "Take a screenshot of a web page using a headless browser. Returns the screenshot uploaded to WordPress media library. " +
+        "Use this to visually verify how a page looks after making changes, or to capture a reference design.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The full URL to screenshot, e.g. https://example.com" },
+          full_page: {
+            type: "boolean",
+            description: "Capture full scrollable page (default false, captures viewport only).",
+          },
+          reason: { type: "string", description: "One short sentence describing why you're taking this screenshot." },
+        },
+        required: ["url"],
+      },
+    },
+  },
 ];
