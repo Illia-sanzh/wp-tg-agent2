@@ -12,7 +12,7 @@ import type { TaskProfile, AgentEvent, ChatMessage } from "./types";
 
 const SUMMARIZE_AFTER = 6;
 const IMAGE_MARKER_RE = /\[IMAGE:([^\]]+)\]/g;
-const VISION_MODELS = ["claude", "gpt-4o", "gpt-4-turbo", "gemini"];
+const VISION_MODELS = ["claude", "gpt-5", "gpt-4-turbo", "gemini"];
 
 function supportsVision(model: string): boolean {
   const m = model.toLowerCase();
@@ -49,7 +49,7 @@ export async function summarizeHistory(
     const cheapModel = pickAvailableModel(
       ROUTER_MODEL,
       `openrouter/claude-haiku`,
-      "openrouter/gpt-4o-mini",
+      "openrouter/gpt-5.4-nano",
       DEFAULT_MODEL,
     );
     const summaryResp = await client.chat.completions.create({
@@ -160,7 +160,7 @@ export async function* runAgent(
   if (profile.model) {
     model =
       profile.model === "cheap"
-        ? pickAvailableModel(ROUTER_MODEL, "openrouter/claude-haiku", "openrouter/gpt-4o-mini", DEFAULT_MODEL)
+        ? pickAvailableModel(ROUTER_MODEL, "openrouter/claude-haiku", "openrouter/gpt-5.4-nano", DEFAULT_MODEL)
         : profile.model;
   } else if (profile.maxSteps > 5) {
     const cheapModels = [
@@ -168,8 +168,8 @@ export async function* runAgent(
       "claude-haiku-4-5",
       "openrouter/claude-haiku",
       "openrouter/claude-haiku-4-5",
-      "gpt-4o-mini",
-      "openrouter/gpt-4o-mini",
+      "gpt-5.4-nano",
+      "openrouter/gpt-5.4-nano",
     ];
     if (cheapModels.includes(model)) {
       log.info(`[agent] Upgrading model from ${model} → ${DEFAULT_MODEL} for agentic profile '${profile.name}'`);
@@ -326,17 +326,16 @@ export async function* runAgent(
 
       const { text: cleanResult, images } = extractImages(toolResult);
       collectedImages.push(...images);
+      messages.push({ role: "tool", tool_call_id: tc.id, content: cleanResult || toolResult } as any);
       if (images.length > 0 && supportsVision(model)) {
-        const contentParts: any[] = [{ type: "text", text: cleanResult || "Screenshot captured." }];
+        const contentParts: any[] = [{ type: "text", text: "Here is the screenshot I just captured:" }];
         for (const b64 of images) {
           contentParts.push({
             type: "image_url",
             image_url: { url: `data:image/png;base64,${b64}` },
           });
         }
-        messages.push({ role: "tool", tool_call_id: tc.id, content: contentParts } as any);
-      } else {
-        messages.push({ role: "tool", tool_call_id: tc.id, content: cleanResult || toolResult } as any);
+        messages.push({ role: "user", content: contentParts } as any);
       }
 
       if (String(toolResult).startsWith("ERROR")) {

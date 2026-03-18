@@ -109,7 +109,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
       "screenshot",
     ],
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "plugin_dev"],
-    knowledgePatterns: ["plugin", "block", "gutenberg"],
+    knowledgePatterns: ["plugin", "block", "gutenberg", "security"],
     skillFileSections: ["capabilities", "wpcli", "safety", "guardrails"],
     maxSteps: 80,
     maxTokens: 16384,

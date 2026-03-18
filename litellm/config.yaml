@@ -41,14 +41,14 @@ model_list:
       max_tokens: 4096
 
   # ── OpenAI / ChatGPT ──────────────────────────────────────────────────────
-  - model_name: gpt-4o
+  - model_name: gpt-5.4-mini
     litellm_params:
-      model: openai/gpt-4o
+      model: openai/gpt-5.4-mini
       api_key: os.environ/OPENAI_API_KEY
 
-  - model_name: gpt-4o-mini
+  - model_name: gpt-5.4-nano
     litellm_params:
-      model: openai/gpt-4o-mini
+      model: openai/gpt-5.4-nano
       api_key: os.environ/OPENAI_API_KEY
 
   # ── DeepSeek ──────────────────────────────────────────────────────────────
@@ -105,14 +105,14 @@ model_list:
       max_tokens: 4096
 
   # GPT via OpenRouter
-  - model_name: openrouter/gpt-4o
+  - model_name: openrouter/gpt-5.4-mini
     litellm_params:
-      model: openrouter/openai/gpt-4o
+      model: openrouter/openai/gpt-5.4-mini
       api_key: os.environ/OPENROUTER_API_KEY
 
-  - model_name: openrouter/gpt-4o-mini
+  - model_name: openrouter/gpt-5.4-nano
     litellm_params:
-      model: openrouter/openai/gpt-4o-mini
+      model: openrouter/openai/gpt-5.4-nano
       api_key: os.environ/OPENROUTER_API_KEY
 
   # Gemini via OpenRouter

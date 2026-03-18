@@ -292,7 +292,7 @@ coreRouter.post("/inbound", async (req: Request, res: Response) => {
   const thread = getThread(channel, threadKey);
   const profileModel =
     profile.model === "cheap"
-      ? pickAvailableModel(ROUTER_MODEL, "openrouter/claude-haiku", "openrouter/gpt-4o-mini", DEFAULT_MODEL)
+      ? pickAvailableModel(ROUTER_MODEL, "openrouter/claude-haiku", "openrouter/gpt-5.4-nano", DEFAULT_MODEL)
       : profile.model;
   const model = reqModel ?? profileModel ?? DEFAULT_MODEL;
   const history = thread.history.slice(0, -1).map((h) => ({ role: h.role, content: h.content }));

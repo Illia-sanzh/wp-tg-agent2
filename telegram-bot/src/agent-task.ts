@@ -135,11 +135,28 @@ export async function runAgentTask(ctx: MyContext, taskText: string): Promise<vo
     }
   }
 
-  for (const b64 of imageUrls) {
+  if (imageUrls.length === 1) {
     try {
-      await ctx.replyWithPhoto(new InputFile(Buffer.from(b64, "base64"), "screenshot.png"));
+      await ctx.replyWithPhoto(new InputFile(Buffer.from(imageUrls[0], "base64"), "screenshot.png"));
     } catch (e) {
       log.warn(`Failed to send photo to Telegram: ${e}`);
+    }
+  } else if (imageUrls.length > 1) {
+    const media = imageUrls.map((b64, i) => ({
+      type: "photo" as const,
+      media: new InputFile(Buffer.from(b64, "base64"), `screenshot-${i + 1}.png`),
+    }));
+    try {
+      await ctx.replyWithMediaGroup(media);
+    } catch (e) {
+      log.warn(`Failed to send media group: ${e}, falling back to individual photos`);
+      for (let i = 0; i < imageUrls.length; i++) {
+        try {
+          await ctx.replyWithPhoto(new InputFile(Buffer.from(imageUrls[i], "base64"), `screenshot-${i + 1}.png`));
+        } catch (e2) {
+          log.warn(`Failed to send photo ${i + 1}: ${e2}`);
+        }
+      }
     }
   }
 }

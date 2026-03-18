@@ -12,8 +12,8 @@ export const log = pino({
 export const LITELLM_BASE_URL = process.env.LITELLM_BASE_URL ?? "http://greenclaw-litellm:4000/v1";
 export const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY ?? "sk-1234";
 export const DEFAULT_MODEL = process.env.DEFAULT_MODEL ?? "claude-sonnet-4-6";
-export const FALLBACK_MODEL = process.env.FALLBACK_MODEL ?? "gpt-4o";
-export const OR_FALLBACK_MODEL = process.env.OR_FALLBACK_MODEL ?? "openrouter/gpt-4o";
+export const FALLBACK_MODEL = process.env.FALLBACK_MODEL ?? "gpt-5.4-mini";
+export const OR_FALLBACK_MODEL = process.env.OR_FALLBACK_MODEL ?? "openrouter/gpt-5.4-mini";
 
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "";
 export const HTTPS_PROXY = process.env.HTTPS_PROXY ?? "";

@@ -102,14 +102,14 @@ export function registerCommands(): void {
           "• `claude-haiku-4-5` — fast & cheap\n" +
           "• `claude-opus-4-6` — hardest tasks\n\n" +
           "*OpenAI:*\n" +
-          "• `gpt-4o` / `gpt-4o-mini`\n\n" +
+          "• `gpt-5.4-mini` / `gpt-5.4-nano`\n\n" +
           "*DeepSeek:*\n" +
           "• `deepseek-chat` / `deepseek-reasoner`\n\n" +
           "*Google:*\n" +
           "• `gemini-2.0-flash`\n\n" +
           "*Via OpenRouter* \\(only OPENROUTER\\_API\\_KEY needed\\):\n" +
           "• `openrouter/claude-sonnet-4-6` / `openrouter/claude-opus-4-6` / `openrouter/claude-haiku-4-5`\n" +
-          "• `openrouter/gpt-4o` / `openrouter/gpt-4o-mini`\n" +
+          "• `openrouter/gpt-5.4-mini` / `openrouter/gpt-5.4-nano`\n" +
           "• `openrouter/gemini-2.0-flash`\n" +
           "• `openrouter/deepseek-chat` / `openrouter/deepseek-r1`\n" +
           "• `openrouter/llama-3.3-70b` · `openrouter/mistral-large` · `openrouter/qwq-32b`\n" +

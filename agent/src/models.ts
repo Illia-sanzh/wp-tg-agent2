@@ -11,12 +11,12 @@ export async function probeModels(): Promise<void> {
   const candidates = [
     ROUTER_MODEL,
     DEFAULT_MODEL,
-    process.env.FALLBACK_MODEL ?? "gpt-4o",
-    process.env.OR_FALLBACK_MODEL ?? "openrouter/gpt-4o",
+    process.env.FALLBACK_MODEL ?? "gpt-5.4-mini",
+    process.env.OR_FALLBACK_MODEL ?? "openrouter/gpt-5.4-mini",
     "claude-haiku",
     "openrouter/claude-haiku",
-    "gpt-4o-mini",
-    "openrouter/gpt-4o-mini",
+    "gpt-5.4-nano",
+    "openrouter/gpt-5.4-nano",
     "gemini-2.0-flash",
     "openrouter/gemini-2.0-flash",
     "deepseek-chat",
@@ -75,7 +75,7 @@ Respond with ONLY the category name, nothing else.`;
   const routerModel = pickAvailableModel(
     ROUTER_MODEL,
     `openrouter/claude-haiku`,
-    "openrouter/gpt-4o-mini",
+    "openrouter/gpt-5.4-nano",
     DEFAULT_MODEL,
   );
 
