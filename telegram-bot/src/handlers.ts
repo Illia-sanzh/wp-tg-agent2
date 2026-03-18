@@ -313,6 +313,12 @@ export function registerHandlers(): void {
     await runAgentTask(ctx, transcript);
   });
 
+  // Media group buffering for multi-photo uploads
+  const mediaGroupBuffers = new Map<
+    string,
+    { ctx: MyContext; photos: { fileId: string; caption: string }[]; timer: ReturnType<typeof setTimeout> }
+  >();
+
   bot.on("message:photo", async (ctx) => {
     if (!isAdmin(ctx)) {
       await ctx.reply("⛔ Unauthorized.");
@@ -321,50 +327,90 @@ export function registerHandlers(): void {
 
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const caption = (ctx.message.caption ?? "").trim();
+    const groupId = ctx.message.media_group_id;
 
-    const statusMsg = await ctx.reply("📥 Receiving image…");
-
-    let photoBytes: Buffer;
-    try {
-      const tgFile = await ctx.api.getFile(photo.file_id);
-      const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${tgFile.file_path}`;
-      const resp = await axios.get(fileUrl, {
-        responseType: "arraybuffer",
-        proxy: false,
-        httpsAgent: HTTPS_PROXY ? new HttpsProxyAgent(HTTPS_PROXY) : undefined,
-      });
-      photoBytes = Buffer.from(resp.data);
-    } catch (e) {
-      await ctx.api.editMessageText(
-        statusMsg.chat.id,
-        statusMsg.message_id,
-        `❌ Failed to download image: ${sanitize(String(e))}`,
-      );
+    if (groupId) {
+      const existing = mediaGroupBuffers.get(groupId);
+      if (existing) {
+        existing.photos.push({ fileId: photo.file_id, caption });
+        clearTimeout(existing.timer);
+        existing.timer = setTimeout(() => processMediaGroup(groupId), 800);
+      } else {
+        const timer = setTimeout(() => processMediaGroup(groupId), 800);
+        mediaGroupBuffers.set(groupId, { ctx, photos: [{ fileId: photo.file_id, caption }], timer });
+      }
       return;
     }
+
+    // Single photo (no media group)
+    await uploadAndProcess(ctx, [{ fileId: photo.file_id, caption }]);
+  });
+
+  async function downloadPhoto(ctx: MyContext, fileId: string): Promise<Buffer> {
+    const tgFile = await ctx.api.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${tgFile.file_path}`;
+    const resp = await axios.get(fileUrl, {
+      responseType: "arraybuffer",
+      proxy: false,
+      httpsAgent: HTTPS_PROXY ? new HttpsProxyAgent(HTTPS_PROXY) : undefined,
+    });
+    return Buffer.from(resp.data);
+  }
+
+  async function processMediaGroup(groupId: string): Promise<void> {
+    const group = mediaGroupBuffers.get(groupId);
+    mediaGroupBuffers.delete(groupId);
+    if (!group) return;
+    await uploadAndProcess(group.ctx, group.photos);
+  }
+
+  async function uploadAndProcess(ctx: MyContext, photos: { fileId: string; caption: string }[]): Promise<void> {
+    const statusMsg = await ctx.reply(`📤 Uploading ${photos.length} image${photos.length > 1 ? "s" : ""}…`);
+    const uploaded: { id: number; url: string }[] = [];
+
+    for (const p of photos) {
+      try {
+        const photoBytes = await downloadPhoto(ctx, p.fileId);
+        const form = new FormData();
+        form.append("file", photoBytes, { filename: `telegram_${p.fileId}.jpg`, contentType: "image/jpeg" });
+        const r = await agentAxios.post(`${AGENT_URL}/upload`, form, {
+          headers: form.getHeaders(),
+          timeout: 60_000,
+        });
+        if (r.data.id) uploaded.push({ id: r.data.id, url: r.data.url ?? "" });
+      } catch (e) {
+        log.warn(`Failed to upload photo: ${e}`);
+      }
+    }
+
     await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id);
 
-    ctx.session.pendingMedia = {
-      bytes: [...photoBytes],
-      filename: `telegram_${photo.file_id}.jpg`,
-      contentType: "image/jpeg",
-    };
-    ctx.session.mediaStep = "waiting";
-
-    if (caption) {
-      await processPendingMedia(ctx, caption);
+    if (uploaded.length === 0) {
+      await ctx.reply("❌ Failed to upload images.");
       return;
     }
 
-    await ctx.reply(
-      "📸 Got your image! What would you like to do with it?\n\n" +
-        "• _Upload to WordPress media library_\n" +
-        "• _Set as featured image for a new post_\n" +
-        "• _Use in a blog post about..._\n" +
-        "• _Analyse and describe it_\n" +
-        "• _Any other task_\n\n" +
-        "Just describe what you want, or type `/cancel` to discard.",
-      { parse_mode: "Markdown" },
-    );
-  });
+    const caption = photos
+      .map((p) => p.caption)
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    const mediaInfo = uploaded.map((u) => `Media ID: ${u.id}, URL: ${u.url}`).join("\n");
+
+    if (caption) {
+      await ctx.replyWithChatAction("typing");
+      await runAgentTask(
+        ctx,
+        `The user shared ${uploaded.length} image(s) uploaded to WordPress:\n${mediaInfo}\n\nTask: ${caption}`,
+      );
+    } else {
+      const lines = uploaded.map((u) => `🆔 \`${u.id}\` — ${u.url}`);
+      await ctx.reply(
+        `✅ Uploaded ${uploaded.length} image${uploaded.length > 1 ? "s" : ""} to WordPress:\n${lines.join("\n")}`,
+        {
+          parse_mode: "Markdown",
+        },
+      );
+    }
+  }
 }
