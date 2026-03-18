@@ -48,7 +48,7 @@ export async function summarizeHistory(
   try {
     const cheapModel = pickAvailableModel(
       ROUTER_MODEL,
-      `openrouter/claude-haiku`,
+      "openrouter/gpt-5.4-mini",
       "openrouter/gpt-5.4-nano",
       DEFAULT_MODEL,
     );
@@ -103,13 +103,8 @@ export async function runSingleShot(
   ];
 
   const fallback = model.startsWith("openrouter/")
-    ? pickAvailableModel(
-        OR_FALLBACK_MODEL,
-        "openrouter/gemini-2.0-flash",
-        "openrouter/deepseek-chat",
-        "openrouter/claude-haiku",
-      )
-    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat", "claude-haiku");
+    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/gemini-2.0-flash", "openrouter/deepseek-chat")
+    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat");
 
   try {
     const resp = await client.chat.completions.create({
@@ -160,17 +155,10 @@ export async function* runAgent(
   if (profile.model) {
     model =
       profile.model === "cheap"
-        ? pickAvailableModel(ROUTER_MODEL, "openrouter/claude-haiku", "openrouter/gpt-5.4-nano", DEFAULT_MODEL)
+        ? pickAvailableModel(ROUTER_MODEL, "openrouter/gpt-5.4-mini", "openrouter/gpt-5.4-nano", DEFAULT_MODEL)
         : profile.model;
   } else if (profile.maxSteps > 5) {
-    const cheapModels = [
-      "claude-haiku",
-      "claude-haiku-4-5",
-      "openrouter/claude-haiku",
-      "openrouter/claude-haiku-4-5",
-      "gpt-5.4-nano",
-      "openrouter/gpt-5.4-nano",
-    ];
+    const cheapModels = ["gpt-5.4-nano", "openrouter/gpt-5.4-nano"];
     if (cheapModels.includes(model)) {
       log.info(`[agent] Upgrading model from ${model} → ${DEFAULT_MODEL} for agentic profile '${profile.name}'`);
       model = DEFAULT_MODEL;
@@ -190,13 +178,8 @@ export async function* runAgent(
   const maxTokens = profile.maxTokens || 16384;
   const maxOutput = profile.maxOutputChars || MAX_OUTPUT_CHARS;
   const fallback = model.startsWith("openrouter/")
-    ? pickAvailableModel(
-        OR_FALLBACK_MODEL,
-        "openrouter/gemini-2.0-flash",
-        "openrouter/deepseek-chat",
-        "openrouter/claude-haiku",
-      )
-    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat", "claude-haiku");
+    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/gemini-2.0-flash", "openrouter/deepseek-chat")
+    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat");
 
   log.info(
     `[agent] Profile: ${profile.name} | tools: ${profileTools.length} | maxSteps: ${maxSteps} | maxTokens: ${maxTokens}`,

@@ -13,8 +13,6 @@ export async function probeModels(): Promise<void> {
     DEFAULT_MODEL,
     process.env.FALLBACK_MODEL ?? "gpt-5.4-mini",
     process.env.OR_FALLBACK_MODEL ?? "openrouter/gpt-5.4-mini",
-    "claude-haiku",
-    "openrouter/claude-haiku",
     "gpt-5.4-nano",
     "openrouter/gpt-5.4-nano",
     "gemini-2.0-flash",
@@ -66,7 +64,8 @@ Categories:
 - bug_fix: investigating a bug report, searching code in GitHub, creating a fix, submitting a pull request
 - wp_admin: WordPress admin tasks (plugin management, user management, settings, content CRUD, database queries, site maintenance). Also small plugin fixes: changing a URL, fixing a bug, tweaking a value, editing a single file.
 - scheduling: scheduling tasks for the future, cron jobs, reminders
-- web_design: creating or modifying web pages, HTML/CSS, designing layouts, replicating designs
+- greenshift: creating or editing Greenshift/GreenLight blocks, converting HTML to Greenshift block format, working with the Greenshift page builder or its element blocks
+- web_design: creating or modifying web pages, HTML/CSS, designing layouts, replicating designs (NOT Greenshift-specific — use greenshift for that)
 - plugin_dev: creating NEW WordPress plugins from scratch, or MAJOR rewrites (adding multiple features, restructuring, building multi-file plugins). NOT for small edits or quick fixes — use wp_admin for those.
 - general: anything that doesn't fit above, or complex multi-domain tasks
 
@@ -74,7 +73,7 @@ Respond with ONLY the category name, nothing else.`;
 
   const routerModel = pickAvailableModel(
     ROUTER_MODEL,
-    `openrouter/claude-haiku`,
+    "openrouter/gpt-5.4-mini",
     "openrouter/gpt-5.4-nano",
     DEFAULT_MODEL,
   );

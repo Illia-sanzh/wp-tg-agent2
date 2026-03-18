@@ -99,7 +99,6 @@ export function registerCommands(): void {
           "• `auto` — smart routing ⚡/◆/🧠\n\n" +
           "*Anthropic:*\n" +
           "• `claude-sonnet-4-6` — default, best quality\n" +
-          "• `claude-haiku-4-5` — fast & cheap\n" +
           "• `claude-opus-4-6` — hardest tasks\n\n" +
           "*OpenAI:*\n" +
           "• `gpt-5.4-mini` / `gpt-5.4-nano`\n\n" +
@@ -108,7 +107,7 @@ export function registerCommands(): void {
           "*Google:*\n" +
           "• `gemini-2.0-flash`\n\n" +
           "*Via OpenRouter* \\(only OPENROUTER\\_API\\_KEY needed\\):\n" +
-          "• `openrouter/claude-sonnet-4-6` / `openrouter/claude-opus-4-6` / `openrouter/claude-haiku-4-5`\n" +
+          "• `openrouter/claude-sonnet-4-6` / `openrouter/claude-opus-4-6`\n" +
           "• `openrouter/gpt-5.4-mini` / `openrouter/gpt-5.4-nano`\n" +
           "• `openrouter/gemini-2.0-flash`\n" +
           "• `openrouter/deepseek-chat` / `openrouter/deepseek-r1`\n" +

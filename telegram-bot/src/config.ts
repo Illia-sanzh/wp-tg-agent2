@@ -25,13 +25,12 @@ export const AGENT_URL = process.env.AGENT_URL ?? "http://greenclaw-agent:8080";
 export const AGENT_AUTH_TOKEN = process.env.LITELLM_MASTER_KEY ?? "";
 export const DEFAULT_MODEL = process.env.DEFAULT_MODEL ?? "claude-sonnet-4-6";
 export const AUTO_ROUTING = (process.env.AUTO_ROUTING ?? "false").toLowerCase() === "true";
-export const FAST_MODEL = process.env.FAST_MODEL ?? "claude-haiku-4-5";
+export const FAST_MODEL = process.env.FAST_MODEL ?? "gpt-5.4-mini";
 export const SMART_MODEL = process.env.SMART_MODEL ?? DEFAULT_MODEL;
 
 export const KNOWN_MODELS = new Set([
   "auto",
   "claude-sonnet-4-6",
-  "claude-haiku-4-5",
   "claude-opus-4-6",
   "gpt-5.4-mini",
   "gpt-5.4-nano",
@@ -39,7 +38,6 @@ export const KNOWN_MODELS = new Set([
   "deepseek-reasoner",
   "gemini-2.0-flash",
   "openrouter/claude-sonnet-4-6",
-  "openrouter/claude-haiku-4-5",
   "openrouter/claude-opus-4-6",
   "openrouter/gpt-5.4-mini",
   "openrouter/gpt-5.4-nano",

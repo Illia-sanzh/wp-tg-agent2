@@ -9,7 +9,7 @@ export function effortBody(model: string, effort?: "low" | "medium" | "high"): R
 }
 
 export const ROUTER_MODEL =
-  process.env.ROUTER_MODEL ?? (DEFAULT_MODEL.startsWith("openrouter/") ? "openrouter/claude-haiku" : "claude-haiku");
+  process.env.ROUTER_MODEL ?? (DEFAULT_MODEL.startsWith("openrouter/") ? "openrouter/gpt-5.4-mini" : "gpt-5.4-mini");
 
 export const TASK_PROFILES: Record<string, TaskProfile> = {
   forum_reply: {
@@ -134,6 +134,34 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
     maxSteps: 50,
     maxTokens: 16384,
     maxOutputChars: 16000,
+  },
+  greenshift: {
+    name: "greenshift",
+    tools: [
+      "run_command",
+      "read_file",
+      "wp_rest",
+      "write_file",
+      "fetch_page",
+      "web_search",
+      "screenshot",
+      "skill_",
+      "wp_cli_remote",
+    ],
+    promptSections: [
+      "identity",
+      "wp_config",
+      "execution_rules",
+      "efficiency_rules",
+      "wp_mode",
+      "web_design",
+      "custom_skills",
+    ],
+    knowledgePatterns: ["greenlight", "greenshift", "block", "gutenberg"],
+    skillFileSections: ["capabilities", "wpcli", "safety", "content_formatting", "web_design_workflow"],
+    maxSteps: 60,
+    maxTokens: 16384,
+    maxOutputChars: 12000,
   },
   general: {
     name: "general",

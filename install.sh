@@ -205,11 +205,11 @@ if [[ "$_routing" =~ ^[Yy]$ ]]; then
     AUTO_ROUTING="true"
     # Pick sensible defaults based on the selected provider
     case "$DEFAULT_MODEL" in
-        claude-*)  _def_fast="claude-haiku-4-5"  ; _def_smart="claude-opus-4-6"   ;;
-        gpt-*)     _def_fast="gpt-4o-mini"        ; _def_smart="gpt-4o"            ;;
-        deepseek*) _def_fast="deepseek-chat"      ; _def_smart="deepseek-reasoner" ;;
-        gemini*)   _def_fast="gemini-2.0-flash"   ; _def_smart="gemini-2.0-flash"  ;;
-        *)         _def_fast="claude-haiku-4-5"   ; _def_smart="claude-opus-4-6"   ;;
+        claude-*)  _def_fast="claude-sonnet-4-6"  ; _def_smart="claude-opus-4-6"   ;;
+        gpt-*)     _def_fast="gpt-5.4-mini"       ; _def_smart="gpt-5.4-mini"      ;;
+        deepseek*) _def_fast="deepseek-chat"       ; _def_smart="deepseek-reasoner" ;;
+        gemini*)   _def_fast="gemini-2.0-flash"    ; _def_smart="gemini-2.0-flash"  ;;
+        *)         _def_fast="gpt-5.4-mini"        ; _def_smart="claude-opus-4-6"   ;;
     esac
     echo
     echo "  Recommended defaults for your provider:"

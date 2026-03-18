@@ -27,19 +27,6 @@ model_list:
       api_key: os.environ/ANTHROPIC_API_KEY
       max_tokens: 16384
 
-  - model_name: claude-haiku-4-5
-    litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-      max_tokens: 4096
-
-  # Alias for the router/cheap tasks — resolves to Haiku
-  - model_name: claude-haiku
-    litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-      max_tokens: 4096
-
   # ── OpenAI / ChatGPT ──────────────────────────────────────────────────────
   - model_name: gpt-5.4-mini
     litellm_params:
@@ -90,19 +77,6 @@ model_list:
       model: openrouter/anthropic/claude-opus-4.6
       api_key: os.environ/OPENROUTER_API_KEY
       max_tokens: 16384
-
-  - model_name: openrouter/claude-haiku-4-5
-    litellm_params:
-      model: openrouter/anthropic/claude-haiku-4.5
-      api_key: os.environ/OPENROUTER_API_KEY
-      max_tokens: 4096
-
-  # Alias for the router/cheap tasks via OpenRouter
-  - model_name: openrouter/claude-haiku
-    litellm_params:
-      model: openrouter/anthropic/claude-haiku-4.5
-      api_key: os.environ/OPENROUTER_API_KEY
-      max_tokens: 4096
 
   # GPT via OpenRouter
   - model_name: openrouter/gpt-5.4-mini

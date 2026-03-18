@@ -264,7 +264,7 @@ function introspectTools(name, pkgName, env) {
     proc.stdin.write(JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "initialize",
       params: { protocolVersion: "2024-11-05", capabilities: {},
-                clientInfo: { name: "openclaw-mcp-runner", version: "1.0" } },
+                clientInfo: { name: "greenclaw-mcp-runner", version: "1.0" } },
     }) + "\n");
   });
 }
@@ -439,7 +439,7 @@ function callMcpTool(name, pkgName, env, tool, toolArgs) {
     proc.stdin.write(JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "initialize",
       params: { protocolVersion: "2024-11-05", capabilities: {},
-                clientInfo: { name: "openclaw-mcp-runner", version: "1.0" } },
+                clientInfo: { name: "greenclaw-mcp-runner", version: "1.0" } },
     }) + "\n");
   });
 }
