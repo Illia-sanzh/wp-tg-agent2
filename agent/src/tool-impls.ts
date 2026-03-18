@@ -267,7 +267,7 @@ export async function replyToForum(postId: number, content: string): Promise<str
 export function readFile(filePath: string): string {
   if (!filePath) return "ERROR: No file path provided.";
   const normalized = path.resolve(filePath);
-  const readablePaths = ["/tmp/", path.resolve(WP_PATH) + "/"];
+  const readablePaths = ["/tmp/", path.resolve(WP_PATH) + "/", "/app/config/"];
   if (!readablePaths.some((p) => normalized.startsWith(p))) {
     return `ERROR: Can only read files under: ${readablePaths.join(", ")}`;
   }
