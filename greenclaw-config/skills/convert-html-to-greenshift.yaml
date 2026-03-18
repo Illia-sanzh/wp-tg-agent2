@@ -1,0 +1,13 @@
+name: convert_html_to_greenshift
+description: >
+  Convert an HTML file to Greenshift/GreenLight block format.
+  The HTML file must already exist on disk (use write_file to create it first).
+  Returns ready-to-paste WordPress Gutenberg block code.
+  Use this after building clean HTML for Greenshift page designs.
+type: command
+command: "node /app/config/skills/scripts/convert.js {file_path}"
+parameters:
+  - name: file_path
+    type: string
+    description: "Path to the HTML file to convert (e.g. /tmp/design.html)"
+    required: true
