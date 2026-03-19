@@ -1,4 +1,4 @@
-import { log, PORT } from "./config";
+import { log, PORT, DATA_DIR } from "./config";
 import { state } from "./state";
 import { loadThreads } from "./threads";
 import { loadCustomSkills, loadMarkdownSkillList, loadMcpTools, loadWpAbilities } from "./tool-loaders";
@@ -8,11 +8,26 @@ import { probeModels } from "./models";
 import { installProcessHandlers } from "./notify";
 import { createApp } from "./routes";
 import { runStartupValidation } from "./validate";
+import * as fs from "fs";
+import * as path from "path";
+
+function seedAgentMemory(): void {
+  const agentMdPath = path.join(DATA_DIR, "AGENT.md");
+  if (!fs.existsSync(agentMdPath)) {
+    fs.writeFileSync(
+      agentMdPath,
+      "# Agent Memory\n\nNo instructions saved yet. Tell the bot to remember something.\n",
+      "utf8",
+    );
+    log.info("[agent] Seeded AGENT.md");
+  }
+}
 
 export async function main(): Promise<void> {
   runStartupValidation();
   installProcessHandlers();
   loadThreads();
+  seedAgentMemory();
 
   state.cachedCustomTools = loadCustomSkills();
   log.info(`[agent] Custom skills loaded: ${state.cachedCustomTools.length}`);

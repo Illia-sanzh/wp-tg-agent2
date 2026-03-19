@@ -97,9 +97,10 @@ export async function runSingleShot(
     { role: "user", content: userMessage },
   ];
 
-  const fallback = model.startsWith("openrouter/")
-    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/deepseek-chat")
-    : pickAvailableModel(FALLBACK_MODEL, "deepseek-chat");
+  const fallbackChain = model.startsWith("openrouter/")
+    ? [OR_FALLBACK_MODEL, FALLBACK_MODEL, "openrouter/deepseek-chat", "deepseek-chat"]
+    : [FALLBACK_MODEL, OR_FALLBACK_MODEL, "deepseek-chat", "openrouter/deepseek-chat"];
+  const fallback = pickAvailableModel(...fallbackChain);
 
   try {
     const resp = await client.chat.completions.create({
@@ -166,9 +167,10 @@ export async function* runAgent(
   const maxSteps = profile.maxSteps || MAX_STEPS;
   const maxTokens = profile.maxTokens || 16384;
   const maxOutput = profile.maxOutputChars || MAX_OUTPUT_CHARS;
-  const fallback = model.startsWith("openrouter/")
-    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/deepseek-chat")
-    : pickAvailableModel(FALLBACK_MODEL, "deepseek-chat");
+  const fallbackChain = model.startsWith("openrouter/")
+    ? [OR_FALLBACK_MODEL, FALLBACK_MODEL, "openrouter/deepseek-chat", "deepseek-chat"]
+    : [FALLBACK_MODEL, OR_FALLBACK_MODEL, "deepseek-chat", "openrouter/deepseek-chat"];
+  const fallback = pickAvailableModel(...fallbackChain);
 
   log.info(
     `[agent] Profile: ${profile.name} | tools: ${profileTools.length} | maxSteps: ${maxSteps} | maxTokens: ${maxTokens}`,

@@ -138,8 +138,8 @@ case "$provider_choice" in
        FALLBACK_MODEL="gpt-4o" ;;
     3) collect_key "DeepSeek" DEEPSEEK_API_KEY "deepseek-chat"
        FALLBACK_MODEL="deepseek-chat" ;;
-    4) collect_key "Gemini" GEMINI_API_KEY "gemini-3.1-flash"
-       FALLBACK_MODEL="gemini-3.1-flash" ;;
+    4) collect_key "Gemini" GEMINI_API_KEY "gemini-2.5-flash"
+       FALLBACK_MODEL="gemini-2.5-flash" ;;
     5) echo "  Enter the keys you have (leave blank to skip):"
        read -rsp "  Anthropic API key: " ANTHROPIC_API_KEY; echo
        read -rsp "  OpenAI API key: "    OPENAI_API_KEY;    echo
@@ -148,7 +148,7 @@ case "$provider_choice" in
        if   [[ -n "$ANTHROPIC_API_KEY" ]]; then DEFAULT_MODEL="claude-sonnet-4-6"
        elif [[ -n "$OPENAI_API_KEY" ]];   then DEFAULT_MODEL="gpt-4o"
        elif [[ -n "$DEEPSEEK_API_KEY" ]]; then DEFAULT_MODEL="deepseek-chat"
-       elif [[ -n "$GEMINI_API_KEY" ]];   then DEFAULT_MODEL="gemini-3.1-flash"
+       elif [[ -n "$GEMINI_API_KEY" ]];   then DEFAULT_MODEL="gemini-2.5-flash"
        else die "No API key entered."; fi ;;
     *) die "Invalid choice." ;;
 esac
@@ -208,7 +208,7 @@ if [[ "$_routing" =~ ^[Yy]$ ]]; then
         claude-*)  _def_fast="claude-sonnet-4-6"  ; _def_smart="claude-opus-4-6"   ;;
         gpt-*)     _def_fast="gpt-5.4-mini"       ; _def_smart="gpt-5.4-mini"      ;;
         deepseek*) _def_fast="deepseek-chat"       ; _def_smart="deepseek-reasoner" ;;
-        gemini*)   _def_fast="gemini-3.1-flash"    ; _def_smart="gemini-2.5-pro"    ;;
+        gemini*)   _def_fast="gemini-2.5-flash"    ; _def_smart="gemini-2.5-pro"    ;;
         *)         _def_fast="gpt-5.4-mini"        ; _def_smart="claude-opus-4-6"   ;;
     esac
     echo

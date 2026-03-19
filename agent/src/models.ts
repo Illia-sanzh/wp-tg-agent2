@@ -13,8 +13,8 @@ export async function probeModels(): Promise<void> {
     DEFAULT_MODEL,
     process.env.FALLBACK_MODEL ?? "gpt-5.4-mini",
     process.env.OR_FALLBACK_MODEL ?? "openrouter/gpt-5.4-mini",
-    "gemini-3.1-flash",
-    "openrouter/gemini-3.1-flash",
+    "gemini-2.5-flash",
+    "openrouter/gemini-2.5-flash",
     "deepseek-chat",
     "openrouter/deepseek-chat",
   ].filter(Boolean);
@@ -34,7 +34,7 @@ export async function probeModels(): Promise<void> {
         log.info(`[probe] ✓ ${m}`);
       } catch (e: any) {
         const msg = String(e?.message ?? e).slice(0, 120);
-        if (msg.includes("timeout") || msg.includes("429")) {
+        if (msg.includes("timeout") || msg.includes("429") || msg.includes("max_tokens")) {
           state.availableModels.add(m);
           log.info(`[probe] ~ ${m} (transient: ${msg})`);
         } else {

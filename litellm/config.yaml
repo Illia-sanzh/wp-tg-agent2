@@ -45,9 +45,9 @@ model_list:
       api_key: os.environ/DEEPSEEK_API_KEY
 
   # ── Google Gemini ─────────────────────────────────────────────────────────
-  - model_name: gemini-3.1-flash
+  - model_name: gemini-2.5-flash
     litellm_params:
-      model: gemini/gemini-3.1-flash
+      model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
 
   - model_name: gemini-2.5-pro
@@ -80,9 +80,9 @@ model_list:
       api_key: os.environ/OPENROUTER_API_KEY
 
   # Gemini via OpenRouter
-  - model_name: openrouter/gemini-3.1-flash
+  - model_name: openrouter/gemini-2.5-flash
     litellm_params:
-      model: openrouter/google/gemini-3.1-flash
+      model: openrouter/google/gemini-2.5-flash
       api_key: os.environ/OPENROUTER_API_KEY
 
   # DeepSeek via OpenRouter
