@@ -201,6 +201,29 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "update_agent_memory",
+      description:
+        "Update the agent's persistent memory file (AGENT.md). Use this when the user says things like " +
+        "'remember that...', 'don't do X again', 'always do Y', 'from now on...'. " +
+        "The memory persists across conversations so the agent learns from past mistakes. " +
+        "Pass the FULL updated content — this replaces the entire file. Read it first to preserve existing entries.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: {
+            type: "string",
+            description:
+              "The full markdown content to write to AGENT.md. Must include all existing entries plus new ones.",
+          },
+          reason: { type: "string", description: "One short sentence describing what memory is being saved." },
+        },
+        required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "screenshot",
       description:
         "Take a screenshot of a web page using a headless browser. Returns the screenshot uploaded to WordPress media library. " +

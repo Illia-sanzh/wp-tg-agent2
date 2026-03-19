@@ -47,6 +47,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
       "web_search",
       "fetch_page",
       "wp_ability__",
+      "update_agent_memory",
     ],
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "abilities"],
     knowledgePatterns: [],
@@ -58,7 +59,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
   },
   scheduling: {
     name: "scheduling",
-    tools: ["schedule_task", "run_command", "wp_rest"],
+    tools: ["schedule_task", "run_command", "wp_rest", "read_file", "update_agent_memory"],
     promptSections: ["identity", "wp_config", "execution_rules", "scheduling"],
     knowledgePatterns: [],
     skillFileSections: [],
@@ -79,6 +80,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
       "screenshot",
       "skill_",
       "wp_cli_remote",
+      "update_agent_memory",
     ],
     promptSections: [
       "identity",
@@ -107,6 +109,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
       "fetch_page",
       "web_search",
       "screenshot",
+      "update_agent_memory",
     ],
     promptSections: ["identity", "wp_config", "execution_rules", "efficiency_rules", "wp_mode", "plugin_dev"],
     knowledgePatterns: ["plugin", "block", "gutenberg", "security"],
@@ -127,6 +130,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
       "web_search",
       "fetch_page",
       "screenshot",
+      "update_agent_memory",
     ],
     promptSections: ["identity", "execution_rules", "efficiency_rules", "bug_fix_workflow"],
     knowledgePatterns: [],
@@ -147,6 +151,7 @@ export const TASK_PROFILES: Record<string, TaskProfile> = {
       "screenshot",
       "skill_",
       "wp_cli_remote",
+      "update_agent_memory",
     ],
     promptSections: [
       "identity",

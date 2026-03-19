@@ -6,6 +6,7 @@ import axios from "axios";
 import {
   log,
   MAX_OUTPUT_CHARS,
+  DATA_DIR,
   WP_PATH,
   WP_URL,
   WP_ADMIN_USER,
@@ -267,7 +268,7 @@ export async function replyToForum(postId: number, content: string): Promise<str
 export function readFile(filePath: string): string {
   if (!filePath) return "ERROR: No file path provided.";
   const normalized = path.resolve(filePath);
-  const readablePaths = ["/tmp/", path.resolve(WP_PATH) + "/", "/app/config/"];
+  const readablePaths = ["/tmp/", path.resolve(WP_PATH) + "/", "/app/config/", path.resolve(DATA_DIR) + "/"];
   if (!readablePaths.some((p) => normalized.startsWith(p))) {
     return `ERROR: Can only read files under: ${readablePaths.join(", ")}`;
   }
@@ -280,6 +281,28 @@ export function readFile(filePath: string): string {
     return fs.readFileSync(normalized, "utf8");
   } catch (e: any) {
     return `ERROR: ${e.message}`;
+  }
+}
+
+const AGENT_MD_PATH = path.join(DATA_DIR, "AGENT.md");
+
+export function readAgentMemory(): string {
+  try {
+    if (fs.existsSync(AGENT_MD_PATH)) return fs.readFileSync(AGENT_MD_PATH, "utf8").trim();
+  } catch (e) {
+    log.warn(`[agent-memory] Failed to read AGENT.md: ${e}`);
+  }
+  return "";
+}
+
+export function updateAgentMemory(content: string): string {
+  if (!content.trim()) return "ERROR: Cannot write empty content to AGENT.md.";
+  try {
+    fs.writeFileSync(AGENT_MD_PATH, content.trim() + "\n", "utf8");
+    log.info(`[agent-memory] Updated AGENT.md (${content.length} chars)`);
+    return `OK: AGENT.md updated (${content.length} chars). I will remember this in future conversations.`;
+  } catch (e: any) {
+    return `ERROR: Failed to write AGENT.md: ${e.message}`;
   }
 }
 

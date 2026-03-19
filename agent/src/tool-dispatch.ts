@@ -16,6 +16,7 @@ import {
   replyToForum,
   webSearch,
   screenshot,
+  updateAgentMemory,
 } from "./tool-impls";
 import { MCP_RUNNER_URL, wpMcpSession, wpMcpCall } from "./tool-loaders";
 
@@ -137,6 +138,7 @@ export async function dispatchTool(name: string, args: Record<string, any>): Pro
   if (name === "fetch_page") return fetchPage(args.url ?? "");
   if (name === "web_search") return webSearch(args.query ?? "", args.max_results ?? 5);
   if (name === "screenshot") return screenshot(args.url ?? "", args.full_page === true);
+  if (name === "update_agent_memory") return updateAgentMemory(args.content ?? "");
   if (name.startsWith("skill_")) return dispatchSkill(name, args);
   if (name.startsWith("mcp_")) return dispatchMcpTool(name, args);
   if (name.startsWith("wp_ability__")) return dispatchWpAbility(name, args);
@@ -176,6 +178,7 @@ export function toolLabel(fnName: string, fnArgs: Record<string, any>): string {
     return reason ? `🔎 ${reason.slice(0, 120)}` : `🔎 Searching: ${(fnArgs.query ?? "").slice(0, 100)}`;
   if (fnName === "screenshot")
     return reason ? `📸 ${reason.slice(0, 120)}` : `📸 Screenshot: ${(fnArgs.url ?? "").slice(0, 100)}`;
+  if (fnName === "update_agent_memory") return reason ? `🧠 ${reason.slice(0, 120)}` : `🧠 Updating agent memory`;
   if (fnName.startsWith("skill_"))
     return reason ? `🔌 ${reason.slice(0, 120)}` : `🔌 Skill: ${fnName.replace(/^skill_/, "")}`;
   if (fnName.startsWith("wp_ability__"))

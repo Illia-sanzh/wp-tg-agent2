@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import { log, SKILL_FILE, WP_PATH, WP_URL, WP_ADMIN_USER, GITHUB_DEFAULT_REPO } from "./config";
 import { state } from "./state";
+import { readAgentMemory } from "./tool-impls";
 import type { TaskProfile } from "./types";
 
 // SKILL.md section splitting
@@ -262,11 +263,17 @@ ${GITHUB_DEFAULT_REPO ? `Repository: \`${GITHUB_DEFAULT_REPO}\`\nOwner: \`${GITH
 };
 
 export function buildSystemPrompt(sections: string[], profile?: TaskProfile): string {
+  const agentMemory = readAgentMemory();
+  const memorySection = agentMemory
+    ? `## Agent Memory (AGENT.md)\nThese are persistent instructions from the admin. Follow them carefully.\nUse the \`update_agent_memory\` tool when the user asks you to remember something — read the file first with \`read_file\` to preserve existing entries.\n\n${agentMemory}`
+    : "";
+
   if (sections.includes("*")) {
     const all = Object.values(PROMPT_SECTIONS).filter(Boolean).join("\n\n");
     const skillFile = _skillFileRaw;
     const mdSkills = getMarkdownSkills(["*"]);
     const parts = [all];
+    if (memorySection) parts.push(memorySection);
     if (skillFile) parts.push(skillFile);
     if (mdSkills) parts.push("## Installed Knowledge Skills\n\n" + mdSkills);
     return parts.join("\n\n");
@@ -275,6 +282,7 @@ export function buildSystemPrompt(sections: string[], profile?: TaskProfile): st
   for (const s of sections) {
     if (PROMPT_SECTIONS[s]) parts.push(PROMPT_SECTIONS[s]);
   }
+  if (memorySection) parts.push(memorySection);
   if (profile) {
     const skillContent = getSkillFileSections(profile.skillFileSections);
     if (skillContent) parts.push(skillContent);
