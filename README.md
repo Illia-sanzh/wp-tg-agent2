@@ -1,214 +1,155 @@
 # Greenclaw Agent
 
-AI-powered WordPress management via Telegram. Send a message in plain English — the agent executes it on your WordPress site using WP-CLI, REST API, and custom skills.
+Manage your WordPress site by texting a Telegram bot. Write what you want in plain English, send a photo, or speak a voice note — the AI agent figures out the rest.
 
 ```
-You: "Create a blog post about Python tips with a featured image"
-Agent: ✅ Published "10 Python Tips" (ID: 142) with featured image
+You: "Create a landing page that looks like stripe.com with a dark hero section"
+Agent: 🌍 Fetching stripe.com layout...
+       📝 Writing HTML with animations...
+       🔌 Converting to Greenshift blocks...
+       🖥 Inserting into WordPress...
+       📸 Taking screenshot...
+       ✅ Published "Landing Page" — here's how it looks:
+       [screenshot]
 ```
 
-## Architecture
+## How It Works
+
+Eight Docker containers on an isolated network. Only the proxy touches the internet.
 
 ```
-Telegram ──► Bot ──► Agent ──► LiteLLM ──► Squid Proxy ──► Internet
-                        │                       │
-                        ├── WP-CLI ──► WordPress │
-                        ├── REST API ──► WordPress
-                        ├── MCP Servers
-                        └── Custom Skills
+Telegram → Bot → Agent → LiteLLM → Squid → AI APIs
+                   │
+                   ├── WP-CLI / REST API → WordPress
+                   ├── SearXNG → Web search
+                   ├── Browserless → Screenshots
+                   ├── MCP Runner → GitHub, etc.
+                   └── Custom skills (YAML/JS/Markdown)
 ```
 
-Five Docker containers on an isolated internal network:
+| Container | What it does |
+|-----------|-------------|
+| **bot** | Telegram interface (grammY) — messages, photos, voice, progress streaming |
+| **agent** | Express API — agentic LLM loop, tool execution, task scheduling |
+| **litellm** | Model proxy — routes to any provider, budget caps, prompt caching |
+| **squid** | Egress proxy — SSRF protection, blocks private IP ranges |
+| **mcp-runner** | Sandboxed MCP tool servers (GitHub, etc.) |
+| **searxng** | Self-hosted metasearch — no API keys needed |
+| **browser** | Headless Chrome — screenshots and page rendering |
+| **relay** | Socat bridge — connects internal network to host for WordPress bridge plugin |
 
-| Container | Role |
-|-----------|------|
-| **bot** | Telegram interface (grammY) — receives messages, streams progress |
-| **agent** | Express API — LLM agentic loop, tool execution, scheduling |
-| **litellm** | API proxy — model routing, budget caps, key management |
-| **squid** | Egress proxy — domain allowlist, SSRF protection |
-| **mcp-runner** | MCP tool server host (GitHub, etc.) |
-
-Only Squid has internet access. All other containers communicate through an internal Docker network.
-
-## Quick Start
-
-### Automated Install (Ubuntu/Debian)
+## Install
 
 ```bash
 git clone https://github.com/Illia-sanzh/greenclaw-agent.git
 cd greenclaw-agent
-chmod +x install.sh
-./install.sh
+sudo bash install.sh
 ```
 
-The installer handles Docker, WordPress, firewall, and generates all secrets.
+The installer walks you through everything: API keys, Telegram bot, WordPress detection, Docker setup, firewall, and secrets. Takes about 5 minutes on a fresh Ubuntu VPS.
 
-### Manual Setup
+For manual setup, copy `.env.template` to `.env`, fill in your keys, and run `docker compose up -d`.
 
-1. Copy the environment template:
-   ```bash
-   cp .env.template .env
-   ```
+## Features
 
-2. Fill in required values in `.env`:
-   - At least one AI API key (Anthropic, OpenAI, DeepSeek, Gemini, or OpenRouter)
-   - Telegram bot token (from [@BotFather](https://t.me/BotFather))
-   - Your Telegram user ID (from [@userinfobot](https://t.me/userinfobot))
-   - WordPress URL and credentials
-   - Generate secrets: `openssl rand -hex 32`
+### Content & Site Management
+Create posts, manage plugins, handle users, configure settings — anything you'd do in wp-admin.
 
-3. Start the stack:
-   ```bash
-   # Development (with hot reload, pretty logs)
-   docker compose up -d
+### Web Design
+Send a URL and the agent replicates its design as WordPress content. Supports Greenshift block conversion, CSS animations, dark/light sections, responsive layouts. Takes screenshots to verify the result.
 
-   # Production
-   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-   ```
+### Plugin Development
+Describe a plugin and the agent scaffolds, writes, and activates it. Checks code against WordPress security standards (sanitization, escaping, nonces, capabilities).
 
-4. Message your bot on Telegram — send `/start` to verify.
+### Scheduling
+"Update all plugins every Monday at 3am UTC" — the agent sets up persistent cron jobs that survive container restarts.
 
-## What It Can Do
+### Custom Skills
+Extend the agent with YAML tools, markdown knowledge docs, or JS scripts. Install from GitHub repos or create interactively with `/skill`.
 
-**Content management** — create, edit, publish, schedule posts and pages
-```
-"Write a blog post about Docker security best practices"
-"Schedule the draft post to publish at 5pm UTC"
-"Show me all draft posts"
-```
+### Bug Fix Pipeline
+Forum post marked as bug → Telegram notification with "Fix this" button → agent searches GitHub, creates a fix branch, opens a PR, replies on the forum.
 
-**Plugin & theme management** — install, activate, update, configure
-```
-"Install WooCommerce and create 3 sample products"
-"Update all plugins"
-"Show me active plugins"
-```
+### Web Search & Screenshots
+SearXNG provides search without API keys. Browserless Chrome takes screenshots for visual verification and design reference.
 
-**Site administration** — users, settings, media, maintenance
-```
-"Create an editor user for john@example.com"
-"Clear the object cache"
-"Show me the site health status"
-```
+### Voice & Photos
+Send voice notes (transcribed via Whisper) or photos (uploaded to WordPress media library, or used as context for tasks). Multi-photo albums supported.
 
-**Scheduling** — cron-based recurring tasks
-```
-"Update all plugins every Monday at 3am UTC"
-"Check for broken links every day at noon"
-```
+### Agent Memory
+Tell the bot "remember to always use Greenshift blocks" and it saves to a persistent AGENT.md file. The agent reads this on every request so it learns from past mistakes and follows your preferences.
 
-**Custom skills** — extend with YAML tools, markdown knowledge, or JS scripts
-```
-/skill create → interactive wizard
-/skill install → from GitHub URL
-```
+### MCP Tools
+Install MCP servers on the fly with `/mcp install <package>`. GitHub MCP enables the bug fix pipeline. Any MCP-compatible tool server works.
 
-**Bug fix automation** — forum bug reports trigger automated PR creation
-```
-Forum post marked as bug → Telegram notification → "Fix this" button → Agent creates PR
-```
+## AI Models
 
-**Voice messages** — speak your task, Whisper transcribes it
+Works with any combination of providers. The agent probes each model on startup and only uses ones with valid keys.
 
-**Image upload** — send a photo, agent uploads to WordPress media library
+| Provider | Models | Env var |
+|----------|--------|---------|
+| Anthropic | Sonnet 4.6, Opus 4.6 | `ANTHROPIC_API_KEY` |
+| OpenAI | GPT-5.4 Mini | `OPENAI_API_KEY` |
+| DeepSeek | Chat, Reasoner | `DEEPSEEK_API_KEY` |
+| Google | Gemini 2.5 Flash/Pro | `GEMINI_API_KEY` |
+| OpenRouter | All of the above + Llama, Mistral, Qwen, etc. | `OPENROUTER_API_KEY` |
+
+Smart routing (`/model auto`) picks the right model per task — cheap for simple lookups, capable for complex work. Cross-provider fallback means if one provider is down, the agent tries another automatically.
 
 ## Bot Commands
 
-| Command | Description |
+| Command | What it does |
 |---------|-------------|
-| `/start` | Welcome message and feature overview |
-| `/help` | Quick command reference |
-| `/status` | Agent health, model info, loaded skills |
-| `/model` | Show or switch AI model |
-| `/model auto` | Enable smart routing (cheap/standard/smart) |
-| `/tasks` | List scheduled tasks |
-| `/tasks cancel <id>` | Cancel a scheduled task |
-| `/skill` | Manage custom skills (list/create/delete/install) |
-| `/mcp` | Manage MCP tool servers |
+| `/model` | Show or switch AI model (`/model auto` for smart routing) |
+| `/status` | Agent health, loaded skills, available models |
+| `/tasks` | List/cancel scheduled tasks |
+| `/skill` | Manage skills — list, create, delete, install from GitHub |
+| `/mcp` | Install and manage MCP tool servers |
+| `/stats` | Usage stats — tasks by profile, model, errors |
 | `/stop` | Abort current request |
-| `/cancel` | Clear history and cancel flows |
+| `/cancel` | Clear conversation history and stop everything |
 
-## Multi-Provider AI
+## Task Profiles
 
-Supports multiple AI providers simultaneously with automatic fallback:
+The agent automatically classifies each request and picks the right tool set:
 
-| Provider | Models | Key |
-|----------|--------|-----|
-| Anthropic | Claude Sonnet/Opus/Haiku | `ANTHROPIC_API_KEY` |
-| OpenAI | GPT-4o, GPT-4o-mini | `OPENAI_API_KEY` |
-| DeepSeek | DeepSeek Chat/Reasoner | `DEEPSEEK_API_KEY` |
-| Google | Gemini 2.0 Flash | `GEMINI_API_KEY` |
-| OpenRouter | All of the above + Llama, Mistral, Qwen | `OPENROUTER_API_KEY` |
-
-On startup, the agent probes each configured model to detect which API keys are valid. Failed models are excluded from routing.
-
-Use `/model <name>` in Telegram to lock to a specific model, or `/model auto` for smart routing.
+| Profile | When | Tools |
+|---------|------|-------|
+| **wp_admin** | Plugin/user/settings management, small fixes | WP-CLI, REST API, file read/write |
+| **web_design** | Page creation, layout design, CSS | All creative tools + screenshot + skills |
+| **greenshift** | Greenshift/GreenLight block work | Block converter, design skills |
+| **plugin_dev** | Building new plugins from scratch | Full dev toolset + security standards |
+| **bug_fix** | GitHub bug investigation and PR creation | GitHub MCP + file tools |
+| **scheduling** | Cron jobs, timed tasks | Scheduler + basics |
+| **general** | Everything else | All tools |
 
 ## Security
 
-- **Network isolation** — only the Squid proxy can reach the internet
-- **Domain allowlist** — Squid restricts outbound HTTP to approved domains
-- **SSRF protection** — private IP ranges blocked at the proxy level
-- **Admin restriction** — only your Telegram user ID can send commands
-- **Budget cap** — monthly spend limit enforced by LiteLLM
-- **Command blocklist** — dangerous WP-CLI commands (`db drop`, `eval`, `shell`) are rejected
-- **API authentication** — all agent endpoints require a bearer token
-- **Rate limiting** — per-endpoint request throttling prevents abuse
+- Network isolation — containers can't reach the internet directly, only through Squid
+- SSRF protection — private IP ranges blocked at the proxy
+- Admin lock — only your Telegram user ID can interact with the bot
+- Budget cap — monthly AI spend limit enforced by LiteLLM
+- Command blocklist — `db drop`, `eval`, `shell` and other dangerous WP-CLI commands rejected
+- MCP sandboxing — read-only filesystem, dropped capabilities, no host bind mounts
+- Webhook auth — inbound endpoints require a bearer token
 
-## Custom Skills
+## Config
 
-Three types of skills extend the agent's capabilities:
+All configuration lives in `.env`. See [.env.template](.env.template) for the full list.
 
-**YAML tools** — define a command, HTTP call, or webhook as a callable tool:
-```yaml
-name: check_seo
-type: command
-description: Run an SEO audit on a URL
-command: "curl -s 'https://api.example.com/seo?url={url}'"
-parameters:
-  - name: url
-    description: URL to audit
-    type: string
-    required: true
-```
-
-**Markdown knowledge** — inject domain knowledge into the agent's prompt:
-```
-/skill create → type: markdown → paste your content
-```
-
-**JS scripts** — Node.js scripts auto-wrapped as callable tools:
-```
-/skill create → type: script → paste your code
-```
-
-Skills are stored in `greenclaw-config/skills/` and persist across restarts.
-
-## Environment Variables
-
-See [.env.template](.env.template) for the full list with descriptions.
-
-**Required:**
-- One AI API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
-- `TELEGRAM_BOT_TOKEN` — from @BotFather
-- `TELEGRAM_ADMIN_USER_ID` — your Telegram user ID
-- `WP_URL` — your WordPress site URL
-- `LITELLM_MASTER_KEY` — internal auth key (generate with `openssl rand -hex 32`)
+**Minimum required:**
+- One AI API key
+- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ADMIN_USER_ID`
+- `WP_URL` and WordPress credentials
+- `LITELLM_MASTER_KEY` (generate: `openssl rand -hex 32`)
 
 ## Development
 
 ```bash
-# Run tests
-npm test
-
-# Type checking
-npm run typecheck
-
-# Lint
-npm run lint
-
-# Format
-npm run format
+npm test          # run tests
+npm run typecheck # type check agent + bot
+npm run lint      # eslint
+npm run format    # prettier
 ```
 
 ## License
