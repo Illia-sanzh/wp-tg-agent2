@@ -1,6 +1,6 @@
 "use strict";
 /**
- * OpenClaw MCP Runner
+ * Greenclaw MCP Runner
  * ───────────────────
  * Lightweight Express HTTP server that:
  *   1. Installs whitelisted MCP npm packages into /mcps/<name>/
