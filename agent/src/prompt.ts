@@ -265,7 +265,7 @@ ${GITHUB_DEFAULT_REPO ? `Repository: \`${GITHUB_DEFAULT_REPO}\`\nOwner: \`${GITH
 export function buildSystemPrompt(sections: string[], profile?: TaskProfile): string {
   const agentMemory = readAgentMemory();
   const memorySection = agentMemory
-    ? `## Agent Memory (AGENT.md)\nThese are persistent instructions from the admin. Follow them carefully.\nUse the \`update_agent_memory\` tool when the user asks you to remember something — read the file first with \`read_file\` to preserve existing entries.\n\n${agentMemory}`
+    ? `## Agent Memory (AGENT.md)\nThese are persistent instructions from the admin. Follow them carefully.\nWhen the user asks you to remember something, first read /app/data/AGENT.md with read_file, then call update_agent_memory with all existing + new entries.\n\n${agentMemory}`
     : "";
 
   if (sections.includes("*")) {

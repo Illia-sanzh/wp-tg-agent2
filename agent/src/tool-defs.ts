@@ -97,7 +97,7 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
       name: "read_file",
       description:
         "Read the contents of a file. Use this to inspect plugin/theme PHP code before modifying it. " +
-        "Reads from anywhere under the WordPress directory or /tmp/.",
+        "Reads from: WordPress directory, /tmp/, /app/config/, /app/data/.",
       parameters: {
         type: "object",
         properties: {
@@ -120,7 +120,7 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
         "or any text files. PREFERRED over run_command with cat/heredoc for writing files — " +
         "especially large HTML files. You can call this multiple times with append=true " +
         "to build up a file in chunks. " +
-        "Allowed paths: /tmp/, WordPress plugins/themes/mu-plugins directories.",
+        "Allowed paths: /tmp/, /app/data/, WordPress plugins/themes/mu-plugins directories.",
       parameters: {
         type: "object",
         properties: {
@@ -203,10 +203,11 @@ export const TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
     function: {
       name: "update_agent_memory",
       description:
-        "Update the agent's persistent memory file (AGENT.md). Use this when the user says things like " +
+        "Update the agent's persistent memory file at /app/data/AGENT.md. Use this when the user says things like " +
         "'remember that...', 'don't do X again', 'always do Y', 'from now on...'. " +
         "The memory persists across conversations so the agent learns from past mistakes. " +
-        "Pass the FULL updated content — this replaces the entire file. Read it first to preserve existing entries.",
+        "Pass the FULL updated content — this replaces the entire file. " +
+        "IMPORTANT: First use read_file on /app/data/AGENT.md to get existing entries, then include them in the new content.",
       parameters: {
         type: "object",
         properties: {

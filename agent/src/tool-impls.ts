@@ -217,6 +217,7 @@ export const WRITABLE_PATHS = [
   `${WP_PATH}/wp-content/plugins/`,
   `${WP_PATH}/wp-content/themes/`,
   `${WP_PATH}/wp-content/mu-plugins/`,
+  `${DATA_DIR}/`,
 ];
 
 export function writeFile(filePath: string, content: string, append: boolean): string {
