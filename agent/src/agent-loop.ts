@@ -46,12 +46,7 @@ export async function summarizeHistory(
   const toKeep = history.slice(-4);
 
   try {
-    const cheapModel = pickAvailableModel(
-      ROUTER_MODEL,
-      "openrouter/gpt-5.4-mini",
-      "openrouter/gpt-5.4-nano",
-      DEFAULT_MODEL,
-    );
+    const cheapModel = pickAvailableModel(ROUTER_MODEL, "openrouter/gpt-5.4-mini", DEFAULT_MODEL);
     const summaryResp = await client.chat.completions.create({
       model: cheapModel,
       messages: [
@@ -103,8 +98,8 @@ export async function runSingleShot(
   ];
 
   const fallback = model.startsWith("openrouter/")
-    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/gemini-2.0-flash", "openrouter/deepseek-chat")
-    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat");
+    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/deepseek-chat")
+    : pickAvailableModel(FALLBACK_MODEL, "deepseek-chat");
 
   try {
     const resp = await client.chat.completions.create({
@@ -155,14 +150,8 @@ export async function* runAgent(
   if (profile.model) {
     model =
       profile.model === "cheap"
-        ? pickAvailableModel(ROUTER_MODEL, "openrouter/gpt-5.4-mini", "openrouter/gpt-5.4-nano", DEFAULT_MODEL)
+        ? pickAvailableModel(ROUTER_MODEL, "openrouter/gpt-5.4-mini", DEFAULT_MODEL)
         : profile.model;
-  } else if (profile.maxSteps > 5) {
-    const cheapModels = ["gpt-5.4-nano", "openrouter/gpt-5.4-nano"];
-    if (cheapModels.includes(model)) {
-      log.info(`[agent] Upgrading model from ${model} → ${DEFAULT_MODEL} for agentic profile '${profile.name}'`);
-      model = DEFAULT_MODEL;
-    }
   }
 
   let systemInjected = false;
@@ -178,8 +167,8 @@ export async function* runAgent(
   const maxTokens = profile.maxTokens || 16384;
   const maxOutput = profile.maxOutputChars || MAX_OUTPUT_CHARS;
   const fallback = model.startsWith("openrouter/")
-    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/gemini-2.0-flash", "openrouter/deepseek-chat")
-    : pickAvailableModel(FALLBACK_MODEL, "gemini-2.0-flash", "deepseek-chat");
+    ? pickAvailableModel(OR_FALLBACK_MODEL, "openrouter/deepseek-chat")
+    : pickAvailableModel(FALLBACK_MODEL, "deepseek-chat");
 
   log.info(
     `[agent] Profile: ${profile.name} | tools: ${profileTools.length} | maxSteps: ${maxSteps} | maxTokens: ${maxTokens}`,

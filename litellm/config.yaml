@@ -33,11 +33,6 @@ model_list:
       model: openai/gpt-5.4-mini
       api_key: os.environ/OPENAI_API_KEY
 
-  - model_name: gpt-5.4-nano
-    litellm_params:
-      model: openai/gpt-5.4-nano
-      api_key: os.environ/OPENAI_API_KEY
-
   # ── DeepSeek ──────────────────────────────────────────────────────────────
   - model_name: deepseek-chat
     litellm_params:
@@ -50,9 +45,9 @@ model_list:
       api_key: os.environ/DEEPSEEK_API_KEY
 
   # ── Google Gemini ─────────────────────────────────────────────────────────
-  - model_name: gemini-2.0-flash
+  - model_name: gemini-3.1-flash
     litellm_params:
-      model: gemini/gemini-2.0-flash
+      model: gemini/gemini-3.1-flash
       api_key: os.environ/GEMINI_API_KEY
 
   - model_name: gemini-2.5-pro
@@ -84,15 +79,10 @@ model_list:
       model: openrouter/openai/gpt-5.4-mini
       api_key: os.environ/OPENROUTER_API_KEY
 
-  - model_name: openrouter/gpt-5.4-nano
-    litellm_params:
-      model: openrouter/openai/gpt-5.4-nano
-      api_key: os.environ/OPENROUTER_API_KEY
-
   # Gemini via OpenRouter
-  - model_name: openrouter/gemini-2.0-flash
+  - model_name: openrouter/gemini-3.1-flash
     litellm_params:
-      model: openrouter/google/gemini-2.0-flash-001
+      model: openrouter/google/gemini-3.1-flash
       api_key: os.environ/OPENROUTER_API_KEY
 
   # DeepSeek via OpenRouter

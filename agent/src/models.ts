@@ -13,10 +13,8 @@ export async function probeModels(): Promise<void> {
     DEFAULT_MODEL,
     process.env.FALLBACK_MODEL ?? "gpt-5.4-mini",
     process.env.OR_FALLBACK_MODEL ?? "openrouter/gpt-5.4-mini",
-    "gpt-5.4-nano",
-    "openrouter/gpt-5.4-nano",
-    "gemini-2.0-flash",
-    "openrouter/gemini-2.0-flash",
+    "gemini-3.1-flash",
+    "openrouter/gemini-3.1-flash",
     "deepseek-chat",
     "openrouter/deepseek-chat",
   ].filter(Boolean);
@@ -71,12 +69,7 @@ Categories:
 
 Respond with ONLY the category name, nothing else.`;
 
-  const routerModel = pickAvailableModel(
-    ROUTER_MODEL,
-    "openrouter/gpt-5.4-mini",
-    "openrouter/gpt-5.4-nano",
-    DEFAULT_MODEL,
-  );
+  const routerModel = pickAvailableModel(ROUTER_MODEL, "openrouter/gpt-5.4-mini", DEFAULT_MODEL);
 
   try {
     const resp = await client.chat.completions.create({
