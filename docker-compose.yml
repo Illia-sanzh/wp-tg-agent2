@@ -191,7 +191,7 @@ services:
   # Self-hosted metasearch (SearXNG). No API keys needed.
   # Agent calls its JSON API to search the web.
   greenclaw-searxng:
-    image: searxng/searxng:latest
+    image: searxng/searxng:2024.12.23-67610fa2c
     container_name: greenclaw-searxng
     restart: unless-stopped
     volumes:
@@ -215,7 +215,7 @@ services:
   # ── Headless Browser ─────────────────────────────────────────────────────
   # Chromium for screenshots and page rendering. Agent calls its HTTP API.
   greenclaw-browser:
-    image: browserless/chrome:latest
+    image: browserless/chrome:2-chrome-stable
     container_name: greenclaw-browser
     restart: unless-stopped
     environment:
